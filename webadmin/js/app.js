@@ -1,54 +1,50 @@
 /**
- * Mirth Connect Web Admin - Main Application
+ * Main Application - manages login/logout, layout, routing, status bar.
  */
 var App = (function () {
     'use strict';
 
     var currentUser = null;
+    var clockTimer = null;
 
     function init() {
-        // Register routes
-        Router.register('/login', function (container) {
-            hideNav();
-            return LoginView.render(container);
+        // Register routes (all render into content-body)
+        Router.register('/dashboard', function (container, params) {
+            return DashboardView.render(container, params);
         });
-
-        Router.register('/dashboard', function (container) {
-            if (!currentUser) { Router.navigate('/login'); return { destroy: function () {} }; }
-            showNav();
-            return DashboardView.render(container);
-        });
-
         Router.register('/messages', function (container, params) {
-            if (!currentUser) { Router.navigate('/login'); return { destroy: function () {} }; }
-            showNav();
             return MessagesView.render(container, params);
         });
-
-        Router.register('/settings', function (container) {
-            if (!currentUser) { Router.navigate('/login'); return { destroy: function () {} }; }
-            showNav();
-            return SettingsView.render(container);
+        Router.register('/settings', function (container, params) {
+            return SettingsView.render(container, params);
         });
 
-        // Logout handler
-        document.getElementById('btn-logout').addEventListener('click', function (e) {
+        Router.start('content-body');
+
+        // Login form
+        LoginView.init();
+
+        // Logout
+        document.getElementById('task-logout').addEventListener('click', function (e) {
             e.preventDefault();
             doLogout();
         });
 
-        // Session expired handler
+        // Session expired
         window.addEventListener('mirth:sessionExpired', function () {
             currentUser = null;
-            hideNav();
-            Router.navigate('/login');
-            showToast('Your session has expired. Please log in again.', 'warning');
+            showLogin();
+            showToast('Session expired. Please log in again.', 'warning');
         });
 
-        // Start router
-        Router.start('app');
+        // Task section collapse
+        document.querySelectorAll('[data-toggle-section]').forEach(function (header) {
+            header.addEventListener('click', function () {
+                this.closest('.task-section').classList.toggle('collapsed');
+            });
+        });
 
-        // Try to detect an existing session
+        // Try resuming existing session
         tryResumeSession();
     }
 
@@ -57,99 +53,144 @@ var App = (function () {
             .then(function (user) {
                 if (user && (user.username || user.id)) {
                     currentUser = user;
-                    document.getElementById('nav-username').textContent = user.username || 'User';
-                    showNav();
-                    loadServerInfo();
-                    if (Router.getCurrentPath() === '/login') {
-                        Router.navigate('/dashboard');
-                    }
+                    showApp(user.username || 'User');
                 }
             })
             .catch(function () {
-                // No active session - stay on login
-                if (Router.getCurrentPath() !== '/login') {
-                    Router.navigate('/login');
-                }
+                showLogin();
             });
     }
 
     function onLoginSuccess(username) {
         currentUser = { username: username };
-        document.getElementById('nav-username').textContent = username;
-        showNav();
+        showApp(username);
+    }
+
+    function showLogin() {
+        document.getElementById('login-screen').style.display = '';
+        document.getElementById('main-app').style.display = 'none';
+        stopClock();
+        LoginView.reset();
+    }
+
+    function showApp(username) {
+        document.getElementById('login-screen').style.display = 'none';
+        document.getElementById('main-app').style.display = '';
+
+        document.getElementById('status-user').textContent = username;
         loadServerInfo();
-        Router.navigate('/dashboard');
+        startClock();
+
+        // Route to current hash or default to dashboard
+        Router.route();
     }
 
     function doLogout() {
         MirthAPI.logout()
-            .catch(function () { /* ignore logout errors */ })
+            .catch(function () {})
             .finally(function () {
                 currentUser = null;
-                hideNav();
-                Router.navigate('/login');
-                showToast('You have been logged out.', 'info');
+                showLogin();
+                showToast('Logged out.', 'info');
             });
     }
 
     function loadServerInfo() {
         MirthAPI.getServerVersion()
             .then(function (version) {
-                var el = document.getElementById('nav-server-info');
-                if (el) el.textContent = 'v' + version;
+                document.getElementById('status-server-info').textContent = 'Connected | v' + version;
+                document.getElementById('login-version').textContent = 'v' + version;
             })
-            .catch(function () { /* non-critical */ });
+            .catch(function () {});
     }
 
-    function showNav() {
-        document.getElementById('main-nav').classList.remove('d-none');
+    // --- Task Pane Actions ---
+
+    function setTaskActions(title, actions) {
+        var titleEl = document.getElementById('task-actions-title');
+        var body = document.getElementById('task-actions-body');
+        if (titleEl) titleEl.textContent = title;
+        if (!body) return;
+
+        var html = '';
+        actions.forEach(function (a) {
+            var disabled = a.disabled ? ' disabled' : '';
+            var id = a.id ? ' id="' + a.id + '"' : '';
+            html += '<a href="#" class="task-item' + disabled + '"' + id + ' data-task-action="true">' +
+                '<i class="bi ' + a.icon + '"></i> ' + escHtml(a.label) +
+                (a.shortcut ? '<span class="task-shortcut">' + a.shortcut + '</span>' : '') +
+            '</a>';
+        });
+        body.innerHTML = html;
+
+        // Bind actions
+        var items = body.querySelectorAll('[data-task-action]');
+        items.forEach(function (item, i) {
+            if (actions[i] && actions[i].action) {
+                item.addEventListener('click', function (e) {
+                    e.preventDefault();
+                    if (!this.classList.contains('disabled')) {
+                        actions[i].action();
+                    }
+                });
+            }
+        });
     }
 
-    function hideNav() {
-        document.getElementById('main-nav').classList.add('d-none');
+    // --- Status Bar ---
+
+    function showWorking(show) {
+        var el = document.getElementById('status-working');
+        if (el) el.style.display = show ? '' : 'none';
     }
+
+    function startClock() {
+        updateClock();
+        clockTimer = setInterval(updateClock, 1000);
+    }
+
+    function stopClock() {
+        if (clockTimer) { clearInterval(clockTimer); clockTimer = null; }
+    }
+
+    function updateClock() {
+        var el = document.getElementById('status-time');
+        if (el) {
+            var now = new Date();
+            el.textContent = now.toLocaleTimeString() + ' ' + Intl.DateTimeFormat().resolvedOptions().timeZone;
+        }
+    }
+
+    // --- Toasts ---
 
     function showToast(message, type) {
         type = type || 'info';
-        var iconMap = {
-            success: 'bi-check-circle-fill',
-            danger: 'bi-exclamation-triangle-fill',
-            warning: 'bi-exclamation-circle-fill',
-            info: 'bi-info-circle-fill'
-        };
-        var icon = iconMap[type] || iconMap.info;
-
-        var toastId = 'toast-' + Date.now();
+        var icons = { success: 'bi-check-circle-fill', danger: 'bi-exclamation-triangle-fill', warning: 'bi-exclamation-circle-fill', info: 'bi-info-circle-fill' };
+        var id = 'toast-' + Date.now();
         var html =
-            '<div id="' + toastId + '" class="toast align-items-center text-bg-' + type + ' border-0" role="alert">' +
+            '<div id="' + id + '" class="toast align-items-center text-bg-' + type + ' border-0" role="alert">' +
                 '<div class="d-flex">' +
-                    '<div class="toast-body">' +
-                        '<i class="bi ' + icon + ' me-2"></i>' + escapeHtml(message) +
-                    '</div>' +
+                    '<div class="toast-body"><i class="bi ' + (icons[type] || icons.info) + ' me-2"></i>' + escHtml(message) + '</div>' +
                     '<button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast"></button>' +
                 '</div>' +
             '</div>';
 
         var container = document.getElementById('toast-container');
         container.insertAdjacentHTML('beforeend', html);
-
-        var toastEl = document.getElementById(toastId);
-        var toast = new bootstrap.Toast(toastEl, { delay: 4000 });
+        var el = document.getElementById(id);
+        var toast = new bootstrap.Toast(el, { delay: 4000 });
         toast.show();
-
-        toastEl.addEventListener('hidden.bs.toast', function () {
-            toastEl.remove();
-        });
+        el.addEventListener('hidden.bs.toast', function () { el.remove(); });
     }
 
-    function escapeHtml(str) {
-        if (!str) return '';
-        var div = document.createElement('div');
-        div.appendChild(document.createTextNode(str));
-        return div.innerHTML;
+    function escHtml(s) {
+        if (!s) return '';
+        var d = document.createElement('div');
+        d.appendChild(document.createTextNode(s));
+        return d.innerHTML;
     }
 
-    // Initialize when DOM is ready
+    // Init on DOM ready
     if (document.readyState === 'loading') {
         document.addEventListener('DOMContentLoaded', init);
     } else {
@@ -158,6 +199,8 @@ var App = (function () {
 
     return {
         onLoginSuccess: onLoginSuccess,
-        showToast: showToast
+        showToast: showToast,
+        showWorking: showWorking,
+        setTaskActions: setTaskActions
     };
 })();

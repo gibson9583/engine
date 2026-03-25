@@ -1,15 +1,15 @@
 /**
- * Simple hash-based SPA router for Mirth Web Admin.
+ * Simple hash-based SPA router for the web admin.
  */
 var Router = (function () {
     'use strict';
 
     var routes = {};
     var currentView = null;
-    var appContainer = null;
+    var container = null;
 
-    function register(path, viewFactory) {
-        routes[path] = viewFactory;
+    function register(path, handler) {
+        routes[path] = handler;
     }
 
     function navigate(path) {
@@ -17,26 +17,28 @@ var Router = (function () {
     }
 
     function start(containerId) {
-        appContainer = document.getElementById(containerId);
+        container = document.getElementById(containerId);
         window.addEventListener('hashchange', onHashChange);
+    }
+
+    function route() {
         onHashChange();
     }
 
     function onHashChange() {
-        var hash = window.location.hash || '#/login';
-        var path = hash.substring(1); // remove '#'
+        if (!container) return;
 
-        // Extract base path and query params
-        var parts = path.split('?');
-        var basePath = parts[0];
-        var queryString = parts[1] || '';
-        var params = parseQuery(queryString);
+        var hash = window.location.hash || '#/dashboard';
+        var raw = hash.substring(1);
+        var qIdx = raw.indexOf('?');
+        var path = qIdx >= 0 ? raw.substring(0, qIdx) : raw;
+        var qs = qIdx >= 0 ? raw.substring(qIdx + 1) : '';
+        var params = parseQuery(qs);
 
-        var viewFactory = routes[basePath];
-        if (!viewFactory) {
-            // Try matching parameterized routes
-            viewFactory = routes['/login'];
-            basePath = '/login';
+        var handler = routes[path];
+        if (!handler) {
+            handler = routes['/dashboard'];
+            path = '/dashboard';
         }
 
         if (currentView && typeof currentView.destroy === 'function') {
@@ -46,12 +48,19 @@ var Router = (function () {
         // Update nav active state
         document.querySelectorAll('[data-nav]').forEach(function (el) {
             el.classList.remove('active');
-            if (basePath.indexOf('/' + el.getAttribute('data-nav')) === 0) {
+            if ('/' + el.getAttribute('data-nav') === path) {
                 el.classList.add('active');
             }
         });
 
-        currentView = viewFactory(appContainer, params);
+        // Update content title
+        var title = document.getElementById('content-title');
+        if (title) {
+            var titles = { '/dashboard': 'Dashboard', '/messages': 'Message Browser', '/settings': 'Settings' };
+            title.textContent = titles[path] || 'Dashboard';
+        }
+
+        currentView = handler(container, params);
     }
 
     function parseQuery(qs) {
@@ -59,22 +68,23 @@ var Router = (function () {
         if (!qs) return params;
         qs.split('&').forEach(function (pair) {
             var kv = pair.split('=');
-            if (kv[0]) {
-                params[decodeURIComponent(kv[0])] = decodeURIComponent(kv[1] || '');
-            }
+            if (kv[0]) params[decodeURIComponent(kv[0])] = decodeURIComponent(kv[1] || '');
         });
         return params;
     }
 
     function getCurrentPath() {
-        var hash = window.location.hash || '#/login';
-        return hash.substring(1).split('?')[0];
+        var hash = window.location.hash || '#/dashboard';
+        var raw = hash.substring(1);
+        var qIdx = raw.indexOf('?');
+        return qIdx >= 0 ? raw.substring(0, qIdx) : raw;
     }
 
     return {
         register: register,
         navigate: navigate,
         start: start,
+        route: route,
         getCurrentPath: getCurrentPath
     };
 })();

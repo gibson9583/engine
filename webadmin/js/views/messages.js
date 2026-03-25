@@ -1,162 +1,172 @@
 /**
- * Message Browser View - Search and view messages for a channel.
+ * Message Browser View - Search, browse, and inspect messages.
+ * Mimics the classic Mirth admin message browser with split pane layout.
  */
 var MessagesView = (function () {
     'use strict';
 
     var currentChannelId = null;
+    var channels = {};
     var currentOffset = 0;
     var currentLimit = 20;
-    var channels = {};
+    var totalCount = 0;
+    var currentMessages = [];
+    var selectedMessage = null;
 
     function render(container, params) {
         currentChannelId = params.channelId || null;
         currentOffset = parseInt(params.offset, 10) || 0;
 
         container.innerHTML =
-            '<div class="container-fluid py-4">' +
-                '<h4 class="mb-4"><i class="bi bi-envelope me-2"></i>Message Browser</h4>' +
-                '<!-- Channel Selector & Search -->' +
-                '<div class="card shadow-sm mb-4">' +
-                    '<div class="card-body">' +
-                        '<div class="row g-3">' +
-                            '<div class="col-md-4">' +
-                                '<label for="msg-channel" class="form-label">Channel</label>' +
-                                '<select class="form-select" id="msg-channel">' +
-                                    '<option value="">Loading channels...</option>' +
-                                '</select>' +
+            '<div class="msg-split">' +
+                '<div class="msg-split-top">' +
+                    '<!-- Search Panel -->' +
+                    '<div class="msg-search-panel">' +
+                        '<div class="msg-search-row">' +
+                            '<label>Channel:</label>' +
+                            '<select id="msg-channel" class="search-select"><option value="">Loading...</option></select>' +
+                            '<label style="min-width:40px;">Text:</label>' +
+                            '<input type="text" id="msg-text-search" placeholder="Search message content..." style="width:200px;">' +
+                            '<label style="min-width:40px;">From:</label>' +
+                            '<input type="datetime-local" id="msg-start-date" style="width:180px;">' +
+                            '<label style="min-width:25px;">To:</label>' +
+                            '<input type="datetime-local" id="msg-end-date" style="width:180px;">' +
+                        '</div>' +
+                        '<div class="msg-search-row">' +
+                            '<label>Status:</label>' +
+                            '<div class="msg-status-checks">' +
+                                statusCheck('RECEIVED', 'Received', true) +
+                                statusCheck('FILTERED', 'Filtered', true) +
+                                statusCheck('TRANSFORMED', 'Transformed', true) +
+                                statusCheck('SENT', 'Sent', true) +
+                                statusCheck('QUEUED', 'Queued', true) +
+                                statusCheck('ERROR', 'Error', true) +
+                                statusCheck('PENDING', 'Pending', true) +
                             '</div>' +
-                            '<div class="col-md-3">' +
-                                '<label for="msg-status" class="form-label">Status</label>' +
-                                '<select class="form-select" id="msg-status">' +
-                                    '<option value="">All Statuses</option>' +
-                                    '<option value="RECEIVED">Received</option>' +
-                                    '<option value="FILTERED">Filtered</option>' +
-                                    '<option value="TRANSFORMED">Transformed</option>' +
-                                    '<option value="SENT">Sent</option>' +
-                                    '<option value="QUEUED">Queued</option>' +
-                                    '<option value="ERROR">Error</option>' +
-                                    '<option value="PENDING">Pending</option>' +
-                                '</select>' +
-                            '</div>' +
-                            '<div class="col-md-3">' +
-                                '<label for="msg-text-search" class="form-label">Text Search</label>' +
-                                '<input type="text" class="form-control" id="msg-text-search" placeholder="Search content...">' +
-                            '</div>' +
-                            '<div class="col-md-2 d-flex align-items-end">' +
-                                '<button class="btn btn-primary w-100" id="msg-search-btn">' +
-                                    '<i class="bi bi-search me-1"></i> Search' +
+                        '</div>' +
+                        '<div class="msg-search-row">' +
+                            '<label>Msg ID:</label>' +
+                            '<input type="number" id="msg-id-min" placeholder="Min" style="width:90px;">' +
+                            '<span style="color:#999;">&ndash;</span>' +
+                            '<input type="number" id="msg-id-max" placeholder="Max" style="width:90px;">' +
+                            '<div style="margin-left:auto; display:flex; gap:6px;">' +
+                                '<button class="msg-btn msg-btn-primary" id="msg-search-btn">' +
+                                    '<i class="bi bi-search"></i> Search' +
                                 '</button>' +
-                            '</div>' +
-                        '</div>' +
-                        '<div class="row g-3 mt-1">' +
-                            '<div class="col-md-3">' +
-                                '<label for="msg-start-date" class="form-label">Start Date</label>' +
-                                '<input type="datetime-local" class="form-control" id="msg-start-date">' +
-                            '</div>' +
-                            '<div class="col-md-3">' +
-                                '<label for="msg-end-date" class="form-label">End Date</label>' +
-                                '<input type="datetime-local" class="form-control" id="msg-end-date">' +
-                            '</div>' +
-                            '<div class="col-md-3">' +
-                                '<label for="msg-id-min" class="form-label">Min Message ID</label>' +
-                                '<input type="number" class="form-control" id="msg-id-min" placeholder="Min ID">' +
-                            '</div>' +
-                            '<div class="col-md-3">' +
-                                '<label for="msg-id-max" class="form-label">Max Message ID</label>' +
-                                '<input type="number" class="form-control" id="msg-id-max" placeholder="Max ID">' +
-                            '</div>' +
-                        '</div>' +
-                        '<div class="row g-3 mt-1">' +
-                            '<div class="col-md-2">' +
-                                '<div class="form-check mt-4">' +
-                                    '<input class="form-check-input" type="checkbox" id="msg-errors-only">' +
-                                    '<label class="form-check-label" for="msg-errors-only">Errors only</label>' +
-                                '</div>' +
-                            '</div>' +
-                            '<div class="col-md-2">' +
-                                '<div class="form-check mt-4">' +
-                                    '<input class="form-check-input" type="checkbox" id="msg-has-attachment">' +
-                                    '<label class="form-check-label" for="msg-has-attachment">Has attachment</label>' +
-                                '</div>' +
+                                '<button class="msg-btn" id="msg-count-btn">Count</button>' +
+                                '<button class="msg-btn" id="msg-reset-btn">Reset</button>' +
                             '</div>' +
                         '</div>' +
                     '</div>' +
+                    '<!-- Results bar -->' +
+                    '<div class="msg-results-bar" id="msg-results-bar">' +
+                        '<span id="msg-results-label">Select a channel and click Search.</span>' +
+                        '<div class="msg-pagination" id="msg-pagination" style="display:none;">' +
+                            '<button id="msg-prev-btn" disabled>&laquo; Previous</button>' +
+                            '<span>Page <input type="text" id="msg-page-num" value="1" readonly> of <span id="msg-total-pages">1</span></span>' +
+                            '<button id="msg-next-btn" disabled>Next &raquo;</button>' +
+                        '</div>' +
+                    '</div>' +
+                    '<!-- Results table -->' +
+                    '<div class="data-table-wrap">' +
+                        '<table class="data-table" id="msg-table">' +
+                            '<thead>' +
+                                '<tr>' +
+                                    '<th style="width:80px;">Id</th>' +
+                                    '<th>Connector</th>' +
+                                    '<th style="width:80px;">Status</th>' +
+                                    '<th style="width:160px;">Received Date</th>' +
+                                    '<th style="width:160px;">Response Date</th>' +
+                                    '<th style="width:50px;">Errors</th>' +
+                                '</tr>' +
+                            '</thead>' +
+                            '<tbody id="msg-body">' +
+                                '<tr class="empty-row"><td colspan="6">No results.</td></tr>' +
+                            '</tbody>' +
+                        '</table>' +
+                    '</div>' +
                 '</div>' +
-                '<!-- Results -->' +
-                '<div id="msg-results">' +
-                    '<div class="text-center text-muted py-5">Select a channel and click Search to browse messages.</div>' +
+                '<!-- Detail pane -->' +
+                '<div class="msg-split-bottom" id="msg-detail-pane" style="display:none;">' +
+                    '<div class="msg-detail-tabs" id="msg-detail-tabs"></div>' +
+                    '<div class="msg-content-radios" id="msg-content-radios"></div>' +
+                    '<div class="msg-content-area" id="msg-content-area">' +
+                        '<pre>Select a message to view content.</pre>' +
+                    '</div>' +
                 '</div>' +
             '</div>';
 
+        // Bind events
         document.getElementById('msg-search-btn').addEventListener('click', doSearch);
-        document.getElementById('msg-channel').addEventListener('change', onChannelChange);
+        document.getElementById('msg-count-btn').addEventListener('click', doCount);
+        document.getElementById('msg-reset-btn').addEventListener('click', resetFilters);
+        document.getElementById('msg-prev-btn').addEventListener('click', prevPage);
+        document.getElementById('msg-next-btn').addEventListener('click', nextPage);
+        document.getElementById('msg-channel').addEventListener('change', function () {
+            currentChannelId = this.value;
+            currentOffset = 0;
+        });
 
-        // Enter key triggers search
+        // Enter triggers search
         ['msg-text-search', 'msg-id-min', 'msg-id-max'].forEach(function (id) {
             document.getElementById(id).addEventListener('keypress', function (e) {
                 if (e.key === 'Enter') doSearch();
             });
         });
 
+        // Task pane
+        App.setTaskActions('Message Tasks', [
+            { icon: 'bi-arrow-clockwise', label: 'Refresh', shortcut: 'R', action: doSearch },
+            { icon: 'bi-search', label: 'Search Messages', shortcut: '', action: doSearch },
+            { icon: 'bi-arrow-repeat', label: 'Reprocess Message', shortcut: '', action: reprocessSelected, id: 'task-reprocess' }
+        ]);
+
         loadChannels();
 
         return { destroy: destroy };
     }
 
+    function statusCheck(value, label, checked) {
+        return '<label><input type="checkbox" value="' + value + '" class="msg-status-cb"' + (checked ? ' checked' : '') + '> ' + label + '</label>';
+    }
+
     function loadChannels() {
         MirthAPI.getChannelIdsAndNames()
-            .then(function (idsAndNames) {
-                channels = idsAndNames || {};
-                var select = document.getElementById('msg-channel');
-                if (!select) return;
+            .then(function (data) {
+                channels = data || {};
+                var sel = document.getElementById('msg-channel');
+                if (!sel) return;
 
-                var options = '<option value="">-- Select Channel --</option>';
-                var entries = Object.entries(channels).sort(function (a, b) {
-                    return a[1].localeCompare(b[1]);
-                });
-                entries.forEach(function (entry) {
-                    var selected = entry[0] === currentChannelId ? ' selected' : '';
-                    options += '<option value="' + escapeAttr(entry[0]) + '"' + selected + '>' +
-                        escapeHtml(entry[1]) + '</option>';
-                });
-                select.innerHTML = options;
-
-                if (currentChannelId) {
-                    doSearch();
-                }
+                var opts = '<option value="">-- Select Channel --</option>';
+                Object.entries(channels).sort(function (a, b) { return a[1].localeCompare(b[1]); })
+                    .forEach(function (e) {
+                        opts += '<option value="' + escAttr(e[0]) + '"' + (e[0] === currentChannelId ? ' selected' : '') + '>' + esc(e[1]) + '</option>';
+                    });
+                sel.innerHTML = opts;
+                if (currentChannelId) doSearch();
             })
-            .catch(function (err) {
-                var select = document.getElementById('msg-channel');
-                if (select) {
-                    select.innerHTML = '<option value="">Failed to load channels</option>';
-                }
+            .catch(function () {
+                var sel = document.getElementById('msg-channel');
+                if (sel) sel.innerHTML = '<option value="">Failed to load channels</option>';
             });
     }
 
-    function onChannelChange() {
-        currentChannelId = document.getElementById('msg-channel').value;
-        currentOffset = 0;
-    }
+    function buildParams() {
+        var params = { includeContent: true, offset: currentOffset, limit: currentLimit };
 
-    function buildSearchParams() {
-        var params = {
-            includeContent: true,
-            offset: currentOffset,
-            limit: currentLimit
-        };
+        // Collect checked statuses
+        var statuses = [];
+        document.querySelectorAll('.msg-status-cb:checked').forEach(function (cb) { statuses.push(cb.value); });
+        if (statuses.length > 0 && statuses.length < 7) params.status = statuses;
 
-        var status = document.getElementById('msg-status').value;
-        if (status) params.status = status;
+        var text = document.getElementById('msg-text-search').value.trim();
+        if (text) params.textSearch = text;
 
-        var textSearch = document.getElementById('msg-text-search').value.trim();
-        if (textSearch) params.textSearch = textSearch;
+        var start = document.getElementById('msg-start-date').value;
+        if (start) params.startDate = new Date(start).toISOString();
 
-        var startDate = document.getElementById('msg-start-date').value;
-        if (startDate) params.startDate = new Date(startDate).toISOString();
-
-        var endDate = document.getElementById('msg-end-date').value;
-        if (endDate) params.endDate = new Date(endDate).toISOString();
+        var end = document.getElementById('msg-end-date').value;
+        if (end) params.endDate = new Date(end).toISOString();
 
         var minId = document.getElementById('msg-id-min').value;
         if (minId) params.minMessageId = minId;
@@ -164,446 +174,307 @@ var MessagesView = (function () {
         var maxId = document.getElementById('msg-id-max').value;
         if (maxId) params.maxMessageId = maxId;
 
-        var errorsOnly = document.getElementById('msg-errors-only').checked;
-        if (errorsOnly) params.error = true;
-
-        var hasAttachment = document.getElementById('msg-has-attachment').checked;
-        if (hasAttachment) params.attachment = true;
-
         return params;
     }
 
     function doSearch() {
-        var channelId = document.getElementById('msg-channel').value;
-        if (!channelId) {
-            App.showToast('Please select a channel first.', 'warning');
-            return;
-        }
-        currentChannelId = channelId;
+        currentChannelId = document.getElementById('msg-channel').value;
+        if (!currentChannelId) { App.showToast('Please select a channel.', 'warning'); return; }
 
-        var resultsEl = document.getElementById('msg-results');
-        resultsEl.innerHTML =
-            '<div class="text-center py-5">' +
-                '<div class="spinner-border text-primary"></div>' +
-                '<p class="text-muted mt-2">Searching messages...</p>' +
-            '</div>';
+        App.showWorking(true);
+        var params = buildParams();
 
-        var params = buildSearchParams();
-
-        // Get count and messages in parallel
         Promise.all([
-            MirthAPI.getMessages(channelId, params),
-            MirthAPI.getMessageCount(channelId, params)
+            MirthAPI.getMessages(currentChannelId, params),
+            MirthAPI.getMessageCount(currentChannelId, params)
         ])
-        .then(function (results) {
-            var messages = results[0];
-            var count = results[1];
-            renderResults(messages, count);
+        .then(function (r) {
+            currentMessages = r[0] || [];
+            totalCount = typeof r[1] === 'number' ? r[1] : parseInt(r[1], 10) || 0;
+            renderResults();
         })
         .catch(function (err) {
-            resultsEl.innerHTML =
-                '<div class="alert alert-danger">' +
-                    '<i class="bi bi-exclamation-triangle me-2"></i>Failed to search messages: ' +
-                    escapeHtml(err.message) +
-                '</div>';
-        });
+            document.getElementById('msg-body').innerHTML = '<tr class="empty-row"><td colspan="6">Error: ' + esc(err.message) + '</td></tr>';
+            document.getElementById('msg-results-label').textContent = 'Search failed.';
+        })
+        .finally(function () { App.showWorking(false); });
     }
 
-    function renderResults(messages, totalCount) {
-        var resultsEl = document.getElementById('msg-results');
-        if (!resultsEl) return;
+    function doCount() {
+        currentChannelId = document.getElementById('msg-channel').value;
+        if (!currentChannelId) { App.showToast('Please select a channel.', 'warning'); return; }
 
-        if (!messages || messages.length === 0) {
-            resultsEl.innerHTML =
-                '<div class="text-center text-muted py-5">' +
-                    '<i class="bi bi-inbox display-4"></i>' +
-                    '<p class="mt-2">No messages found matching your criteria.</p>' +
-                '</div>';
+        App.showWorking(true);
+        MirthAPI.getMessageCount(currentChannelId, buildParams())
+            .then(function (count) {
+                var n = typeof count === 'number' ? count : parseInt(count, 10) || 0;
+                document.getElementById('msg-results-label').textContent = n.toLocaleString() + ' messages match the current filter.';
+            })
+            .catch(function (err) {
+                document.getElementById('msg-results-label').textContent = 'Count failed: ' + err.message;
+            })
+            .finally(function () { App.showWorking(false); });
+    }
+
+    function renderResults() {
+        var tbody = document.getElementById('msg-body');
+        if (!tbody) return;
+
+        var totalPages = Math.max(1, Math.ceil(totalCount / currentLimit));
+        var currentPage = Math.floor(currentOffset / currentLimit) + 1;
+
+        // Results label
+        var label = document.getElementById('msg-results-label');
+        if (currentMessages.length === 0) {
+            label.textContent = 'No messages found.';
+        } else {
+            label.textContent = 'Showing ' + (currentOffset + 1) + '-' + (currentOffset + currentMessages.length) + ' of ' + totalCount.toLocaleString();
+        }
+
+        // Pagination
+        var pag = document.getElementById('msg-pagination');
+        pag.style.display = totalPages > 1 ? '' : 'none';
+        document.getElementById('msg-page-num').value = currentPage;
+        document.getElementById('msg-total-pages').textContent = totalPages;
+        document.getElementById('msg-prev-btn').disabled = currentPage <= 1;
+        document.getElementById('msg-next-btn').disabled = currentPage >= totalPages;
+
+        if (currentMessages.length === 0) {
+            tbody.innerHTML = '<tr class="empty-row"><td colspan="6">No messages found matching the filter.</td></tr>';
             return;
         }
 
-        var channelName = channels[currentChannelId] || currentChannelId;
-        var totalPages = Math.ceil(totalCount / currentLimit);
-        var currentPage = Math.floor(currentOffset / currentLimit) + 1;
+        var html = '';
+        currentMessages.forEach(function (msg) {
+            var conns = msg.connectorMessages || {};
+            var keys = Object.keys(conns).sort(function (a, b) { return a - b; });
 
-        var html =
-            '<div class="d-flex justify-content-between align-items-center mb-3">' +
-                '<span class="text-muted">' +
-                    'Showing ' + (currentOffset + 1) + '-' +
-                    Math.min(currentOffset + messages.length, totalCount) +
-                    ' of ' + formatNumber(totalCount) + ' messages in <strong>' +
-                    escapeHtml(channelName) + '</strong>' +
-                '</span>' +
-            '</div>' +
-            '<div class="card shadow-sm">' +
-                '<div class="card-body p-0">' +
-                    '<div class="table-responsive">' +
-                        '<table class="table table-hover table-sm mb-0">' +
-                            '<thead class="table-light">' +
-                                '<tr>' +
-                                    '<th>ID</th>' +
-                                    '<th>Received Date</th>' +
-                                    '<th>Connector</th>' +
-                                    '<th>Status</th>' +
-                                    '<th>Actions</th>' +
-                                '</tr>' +
-                            '</thead>' +
-                            '<tbody>';
+            keys.forEach(function (metaId, idx) {
+                var cm = conns[metaId];
+                var isFirst = idx === 0;
+                var connName = cm.connectorName || ('Connector ' + metaId);
+                var status = cm.status || 'UNKNOWN';
+                var hasError = cm.processingError || cm.postProcessorError || cm.responseError;
+                var respDate = cm.responseDate ? fmtDate(cm.responseDate) : '';
 
-        messages.forEach(function (msg) {
-            var connectorMessages = msg.connectorMessages || {};
-            var connectorKeys = Object.keys(connectorMessages).sort(function (a, b) {
-                return parseInt(a, 10) - parseInt(b, 10);
+                html += '<tr class="msg-row" data-msg-id="' + msg.messageId + '" data-meta-id="' + metaId + '">' +
+                    '<td>' + (isFirst ? msg.messageId : '') + '</td>' +
+                    '<td>' +
+                        (parseInt(metaId, 10) === 0 ? '<i class="bi bi-box-arrow-in-right" style="font-size:11px;color:#888;"></i> ' : '<i class="bi bi-box-arrow-right" style="font-size:11px;color:#888;"></i> ') +
+                        esc(connName) +
+                    '</td>' +
+                    '<td>' + statusBadge(status) + '</td>' +
+                    '<td>' + (isFirst ? fmtDate(msg.receivedDate) : '') + '</td>' +
+                    '<td>' + respDate + '</td>' +
+                    '<td>' + (hasError ? '<i class="bi bi-exclamation-circle stat-error"></i>' : '') + '</td>' +
+                '</tr>';
             });
 
-            if (connectorKeys.length === 0) {
-                html += renderMessageRow(msg, null);
-            } else {
-                connectorKeys.forEach(function (metaDataId, index) {
-                    html += renderMessageRow(msg, connectorMessages[metaDataId], index === 0, connectorKeys.length);
-                });
+            if (keys.length === 0) {
+                html += '<tr class="msg-row" data-msg-id="' + msg.messageId + '">' +
+                    '<td>' + msg.messageId + '</td><td>&mdash;</td><td>&mdash;</td>' +
+                    '<td>' + fmtDate(msg.receivedDate) + '</td><td></td><td></td></tr>';
             }
         });
 
-        html += '</tbody></table></div></div></div>';
+        tbody.innerHTML = html;
 
-        // Pagination
-        if (totalPages > 1) {
-            html += renderPagination(currentPage, totalPages);
-        }
-
-        resultsEl.innerHTML = html;
-
-        // Attach event listeners
-        resultsEl.querySelectorAll('[data-action="view-message"]').forEach(function (btn) {
-            btn.addEventListener('click', onViewMessage);
-        });
-        resultsEl.querySelectorAll('[data-action="reprocess"]').forEach(function (btn) {
-            btn.addEventListener('click', onReprocessMessage);
-        });
-        resultsEl.querySelectorAll('[data-page]').forEach(function (btn) {
-            btn.addEventListener('click', onPageClick);
+        // Row click
+        tbody.querySelectorAll('.msg-row').forEach(function (row) {
+            row.addEventListener('click', function () { onMsgRowClick(this); });
         });
     }
 
-    function renderMessageRow(msg, connMsg, isFirst, totalConnectors) {
-        var messageId = msg.messageId;
-        var receivedDate = msg.receivedDate ? formatDate(msg.receivedDate) : 'N/A';
+    function onMsgRowClick(row) {
+        // Select row
+        var prev = document.querySelector('.msg-row.selected');
+        if (prev) prev.classList.remove('selected');
+        row.classList.add('selected');
 
-        if (!connMsg) {
-            return '<tr>' +
-                '<td><code>' + messageId + '</code></td>' +
-                '<td>' + receivedDate + '</td>' +
-                '<td>-</td>' +
-                '<td>-</td>' +
-                '<td>' + messageActions(messageId) + '</td>' +
-            '</tr>';
-        }
+        var msgId = row.getAttribute('data-msg-id');
+        var metaId = row.getAttribute('data-meta-id');
 
-        var connectorName = connMsg.connectorName || ('Connector ' + connMsg.metaDataId);
-        var status = connMsg.status || 'UNKNOWN';
+        // Find message in current results
+        var msg = currentMessages.find(function (m) { return String(m.messageId) === msgId; });
+        if (!msg) return;
+        selectedMessage = msg;
 
-        var rowspan = isFirst ? ' rowspan="' + totalConnectors + '"' : '';
-        var html = '<tr>';
-
-        if (isFirst) {
-            html += '<td' + rowspan + '><code>' + messageId + '</code></td>';
-            html += '<td' + rowspan + '>' + receivedDate + '</td>';
-        }
-
-        html += '<td>' +
-            '<span class="small">' +
-                (connMsg.metaDataId === 0 ? '<i class="bi bi-box-arrow-in-right me-1"></i>' : '<i class="bi bi-box-arrow-right me-1"></i>') +
-                escapeHtml(connectorName) +
-            '</span>' +
-        '</td>';
-        html += '<td>' + statusBadge(status) + '</td>';
-
-        if (isFirst) {
-            html += '<td' + rowspan + '>' + messageActions(messageId) + '</td>';
-        }
-
-        html += '</tr>';
-        return html;
+        showMessageDetail(msg, metaId);
     }
 
-    function messageActions(messageId) {
-        return '<div class="btn-group btn-group-sm">' +
-            '<button class="btn btn-outline-primary" data-action="view-message" ' +
-                'data-message-id="' + messageId + '" title="View Details">' +
-                '<i class="bi bi-eye"></i>' +
-            '</button>' +
-            '<button class="btn btn-outline-secondary" data-action="reprocess" ' +
-                'data-message-id="' + messageId + '" title="Reprocess">' +
-                '<i class="bi bi-arrow-repeat"></i>' +
-            '</button>' +
-        '</div>';
-    }
+    function showMessageDetail(msg, activeMetaId) {
+        var pane = document.getElementById('msg-detail-pane');
+        pane.style.display = '';
 
-    function statusBadge(status) {
-        var cls = 'secondary';
-        switch (status) {
-            case 'RECEIVED': cls = 'info'; break;
-            case 'FILTERED': cls = 'warning'; break;
-            case 'TRANSFORMED': cls = 'primary'; break;
-            case 'SENT': cls = 'success'; break;
-            case 'QUEUED': cls = 'info'; break;
-            case 'ERROR': cls = 'danger'; break;
-            case 'PENDING': cls = 'secondary'; break;
-        }
-        return '<span class="badge bg-' + cls + '">' + escapeHtml(status) + '</span>';
-    }
+        var conns = msg.connectorMessages || {};
+        var keys = Object.keys(conns).sort(function (a, b) { return a - b; });
 
-    function renderPagination(currentPage, totalPages) {
-        var html = '<nav class="mt-3"><ul class="pagination justify-content-center">';
-
-        html += '<li class="page-item' + (currentPage <= 1 ? ' disabled' : '') + '">' +
-            '<a class="page-link" href="#" data-page="' + (currentPage - 1) + '">Previous</a></li>';
-
-        var startPage = Math.max(1, currentPage - 2);
-        var endPage = Math.min(totalPages, currentPage + 2);
-
-        if (startPage > 1) {
-            html += '<li class="page-item"><a class="page-link" href="#" data-page="1">1</a></li>';
-            if (startPage > 2) html += '<li class="page-item disabled"><span class="page-link">...</span></li>';
-        }
-
-        for (var p = startPage; p <= endPage; p++) {
-            html += '<li class="page-item' + (p === currentPage ? ' active' : '') + '">' +
-                '<a class="page-link" href="#" data-page="' + p + '">' + p + '</a></li>';
-        }
-
-        if (endPage < totalPages) {
-            if (endPage < totalPages - 1) html += '<li class="page-item disabled"><span class="page-link">...</span></li>';
-            html += '<li class="page-item"><a class="page-link" href="#" data-page="' + totalPages + '">' + totalPages + '</a></li>';
-        }
-
-        html += '<li class="page-item' + (currentPage >= totalPages ? ' disabled' : '') + '">' +
-            '<a class="page-link" href="#" data-page="' + (currentPage + 1) + '">Next</a></li>';
-
-        html += '</ul></nav>';
-        return html;
-    }
-
-    function onPageClick(e) {
-        e.preventDefault();
-        var page = parseInt(e.currentTarget.getAttribute('data-page'), 10);
-        if (isNaN(page) || page < 1) return;
-        currentOffset = (page - 1) * currentLimit;
-        doSearch();
-    }
-
-    function onViewMessage(e) {
-        var messageId = e.currentTarget.getAttribute('data-message-id');
-        showMessageDetail(messageId);
-    }
-
-    function showMessageDetail(messageId) {
-        MirthAPI.getMessage(currentChannelId, messageId)
-            .then(function (msg) {
-                renderMessageModal(msg);
-            })
-            .catch(function (err) {
-                App.showToast('Failed to load message: ' + err.message, 'danger');
-            });
-    }
-
-    function renderMessageModal(msg) {
-        // Remove existing modal
-        var existing = document.getElementById('msg-detail-modal');
-        if (existing) existing.remove();
-
-        var connectorMessages = msg.connectorMessages || {};
-        var connectorKeys = Object.keys(connectorMessages).sort(function (a, b) {
-            return parseInt(a, 10) - parseInt(b, 10);
-        });
-
+        // Build connector tabs
         var tabsHtml = '';
-        var contentHtml = '';
+        keys.forEach(function (metaId) {
+            var cm = conns[metaId];
+            var name = cm.connectorName || ('Connector ' + metaId);
+            var active = metaId === activeMetaId ? ' active' : '';
+            tabsHtml += '<button class="msg-detail-tab' + active + '" data-meta-id="' + metaId + '">' + esc(name) + '</button>';
+        });
 
-        connectorKeys.forEach(function (metaDataId, index) {
-            var connMsg = connectorMessages[metaDataId];
-            var connName = connMsg.connectorName || ('Connector ' + metaDataId);
-            var status = connMsg.status || 'UNKNOWN';
-            var active = index === 0 ? ' active' : '';
-            var show = index === 0 ? ' show active' : '';
+        // Also add Errors tab
+        tabsHtml += '<button class="msg-detail-tab" data-meta-id="__errors">Errors</button>';
 
-            tabsHtml += '<li class="nav-item">' +
-                '<button class="nav-link' + active + '" data-bs-toggle="tab" data-bs-target="#conn-' + metaDataId + '">' +
-                    escapeHtml(connName) + ' ' + statusBadge(status) +
-                '</button>' +
-            '</li>';
+        document.getElementById('msg-detail-tabs').innerHTML = tabsHtml;
 
-            var contentTypes = ['rawData', 'processedRawData', 'transformedData', 'encodedData', 'sentData', 'responseData'];
-            var contentPanels = '';
-
-            contentTypes.forEach(function (type) {
-                var data = getContentData(connMsg, type);
-                if (data) {
-                    var label = type.replace(/([A-Z])/g, ' $1').replace(/^./, function (s) { return s.toUpperCase(); });
-                    contentPanels += '<div class="mb-3">' +
-                        '<label class="form-label fw-bold">' + label + '</label>' +
-                        '<pre class="bg-light p-3 border rounded" style="max-height: 300px; overflow: auto;">' +
-                            '<code>' + escapeHtml(data) + '</code>' +
-                        '</pre>' +
-                    '</div>';
+        // Tab click handlers
+        document.querySelectorAll('.msg-detail-tab').forEach(function (tab) {
+            tab.addEventListener('click', function () {
+                document.querySelectorAll('.msg-detail-tab').forEach(function (t) { t.classList.remove('active'); });
+                this.classList.add('active');
+                var mid = this.getAttribute('data-meta-id');
+                if (mid === '__errors') {
+                    showErrorsContent(msg);
+                } else {
+                    showConnectorContent(conns[mid]);
                 }
             });
-
-            // Errors
-            if (connMsg.processingError || connMsg.postProcessorError || connMsg.responseError) {
-                var errors = [connMsg.processingError, connMsg.postProcessorError, connMsg.responseError]
-                    .filter(Boolean).join('\n---\n');
-                contentPanels += '<div class="mb-3">' +
-                    '<label class="form-label fw-bold text-danger">Errors</label>' +
-                    '<pre class="bg-danger bg-opacity-10 p-3 border border-danger rounded" style="max-height: 200px; overflow: auto;">' +
-                        '<code>' + escapeHtml(errors) + '</code>' +
-                    '</pre>' +
-                '</div>';
-            }
-
-            if (!contentPanels) {
-                contentPanels = '<p class="text-muted">No content available for this connector.</p>';
-            }
-
-            contentHtml += '<div class="tab-pane fade' + show + '" id="conn-' + metaDataId + '">' +
-                '<div class="mb-3">' +
-                    '<div class="row">' +
-                        '<div class="col-md-4"><strong>Connector:</strong> ' + escapeHtml(connName) + '</div>' +
-                        '<div class="col-md-4"><strong>Status:</strong> ' + statusBadge(status) + '</div>' +
-                        '<div class="col-md-4"><strong>Send Attempts:</strong> ' + (connMsg.sendAttempts || 0) + '</div>' +
-                    '</div>' +
-                '</div>' +
-                contentPanels +
-            '</div>';
         });
 
-        var modalHtml =
-            '<div class="modal fade" id="msg-detail-modal" tabindex="-1">' +
-                '<div class="modal-dialog modal-xl modal-dialog-scrollable">' +
-                    '<div class="modal-content">' +
-                        '<div class="modal-header">' +
-                            '<h5 class="modal-title">Message #' + msg.messageId + '</h5>' +
-                            '<button type="button" class="btn-close" data-bs-dismiss="modal"></button>' +
-                        '</div>' +
-                        '<div class="modal-body">' +
-                            '<div class="mb-3">' +
-                                '<div class="row">' +
-                                    '<div class="col-md-4"><strong>Message ID:</strong> ' + msg.messageId + '</div>' +
-                                    '<div class="col-md-4"><strong>Received:</strong> ' + formatDate(msg.receivedDate) + '</div>' +
-                                    '<div class="col-md-4"><strong>Processed:</strong> ' +
-                                        (msg.processed ? '<span class="badge bg-success">Yes</span>' : '<span class="badge bg-warning">No</span>') +
-                                    '</div>' +
-                                '</div>' +
-                            '</div>' +
-                            '<ul class="nav nav-tabs mb-3">' + tabsHtml + '</ul>' +
-                            '<div class="tab-content">' + contentHtml + '</div>' +
-                        '</div>' +
-                        '<div class="modal-footer">' +
-                            '<button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>' +
-                            '<button type="button" class="btn btn-primary" id="modal-reprocess-btn" data-message-id="' + msg.messageId + '">' +
-                                '<i class="bi bi-arrow-repeat me-1"></i>Reprocess' +
-                            '</button>' +
-                        '</div>' +
-                    '</div>' +
-                '</div>' +
-            '</div>';
-
-        document.body.insertAdjacentHTML('beforeend', modalHtml);
-        var modalEl = document.getElementById('msg-detail-modal');
-        var modal = new bootstrap.Modal(modalEl);
-
-        document.getElementById('modal-reprocess-btn').addEventListener('click', function () {
-            onReprocessMessage({ currentTarget: this });
-            modal.hide();
-        });
-
-        modalEl.addEventListener('hidden.bs.modal', function () {
-            modalEl.remove();
-        });
-
-        modal.show();
+        // Show initial content
+        if (activeMetaId && conns[activeMetaId]) {
+            showConnectorContent(conns[activeMetaId]);
+        } else if (keys.length > 0) {
+            showConnectorContent(conns[keys[0]]);
+        }
     }
 
-    function getContentData(connMsg, type) {
-        // The API nests content data in various ways
-        if (connMsg[type]) {
-            if (typeof connMsg[type] === 'string') return connMsg[type];
-            if (connMsg[type].content) return connMsg[type].content;
+    function showConnectorContent(cm) {
+        var contentTypes = [
+            { key: 'rawData', alt: 'raw', label: 'Raw' },
+            { key: 'processedRawData', alt: 'processedRaw', label: 'Processed Raw' },
+            { key: 'transformedData', alt: 'transformed', label: 'Transformed' },
+            { key: 'encodedData', alt: 'encoded', label: 'Encoded' },
+            { key: 'sentData', alt: 'sent', label: 'Sent' },
+            { key: 'responseData', alt: 'response', label: 'Response' }
+        ];
+
+        // Find available content
+        var available = contentTypes.filter(function (ct) { return getContent(cm, ct.key, ct.alt); });
+
+        // Build radio buttons
+        var radiosHtml = '';
+        available.forEach(function (ct, i) {
+            radiosHtml += '<button class="msg-content-radio' + (i === 0 ? ' active' : '') + '" data-content-key="' + ct.key + '" data-content-alt="' + ct.alt + '">' + ct.label + '</button>';
+        });
+
+        document.getElementById('msg-content-radios').innerHTML = radiosHtml;
+
+        // Show first content
+        if (available.length > 0) {
+            renderContent(getContent(cm, available[0].key, available[0].alt));
+        } else {
+            renderContent(null);
         }
-        // Try messageContent map pattern
-        if (connMsg.messageContent && connMsg.messageContent[type]) {
-            var mc = connMsg.messageContent[type];
-            return typeof mc === 'string' ? mc : mc.content;
+
+        // Radio click handlers
+        document.querySelectorAll('.msg-content-radio').forEach(function (btn) {
+            btn.addEventListener('click', function () {
+                document.querySelectorAll('.msg-content-radio').forEach(function (b) { b.classList.remove('active'); });
+                this.classList.add('active');
+                var data = getContent(cm, this.getAttribute('data-content-key'), this.getAttribute('data-content-alt'));
+                renderContent(data);
+            });
+        });
+    }
+
+    function showErrorsContent(msg) {
+        document.getElementById('msg-content-radios').innerHTML = '';
+        var conns = msg.connectorMessages || {};
+        var errors = [];
+
+        Object.keys(conns).forEach(function (metaId) {
+            var cm = conns[metaId];
+            var name = cm.connectorName || ('Connector ' + metaId);
+            if (cm.processingError) errors.push('[' + name + '] Processing Error:\n' + cm.processingError);
+            if (cm.postProcessorError) errors.push('[' + name + '] Postprocessor Error:\n' + cm.postProcessorError);
+            if (cm.responseError) errors.push('[' + name + '] Response Error:\n' + cm.responseError);
+        });
+
+        if (errors.length === 0) {
+            renderContent('No errors for this message.');
+        } else {
+            var area = document.getElementById('msg-content-area');
+            area.innerHTML = '<pre class="msg-error-text">' + esc(errors.join('\n\n---\n\n')) + '</pre>';
         }
-        // Some connMsg have raw/encoded/etc directly
-        var altNames = {
-            'rawData': 'raw',
-            'processedRawData': 'processedRaw',
-            'transformedData': 'transformed',
-            'encodedData': 'encoded',
-            'sentData': 'sent',
-            'responseData': 'response'
-        };
-        var alt = altNames[type];
-        if (alt && connMsg[alt]) {
-            if (typeof connMsg[alt] === 'string') return connMsg[alt];
-            if (connMsg[alt].content) return connMsg[alt].content;
+    }
+
+    function getContent(cm, key, alt) {
+        var val = cm[key] || cm[alt];
+        if (!val) {
+            if (cm.messageContent) val = cm.messageContent[key] || cm.messageContent[alt];
         }
+        if (!val) return null;
+        if (typeof val === 'string') return val;
+        if (val.content) return val.content;
         return null;
     }
 
-    function onReprocessMessage(e) {
-        var messageId = e.currentTarget.getAttribute('data-message-id');
-        if (!confirm('Reprocess message #' + messageId + '?')) return;
-
-        MirthAPI.reprocessMessage(currentChannelId, messageId, false)
-            .then(function () {
-                App.showToast('Message #' + messageId + ' reprocessing started.', 'success');
-            })
-            .catch(function (err) {
-                App.showToast('Failed to reprocess: ' + err.message, 'danger');
-            });
-    }
-
-    function formatDate(dateVal) {
-        if (!dateVal) return 'N/A';
-        try {
-            // Handle various date formats from the API
-            var d;
-            if (typeof dateVal === 'string') {
-                d = new Date(dateVal);
-            } else if (dateVal.time) {
-                d = new Date(dateVal.time);
-            } else if (dateVal.timeInMillis) {
-                d = new Date(dateVal.timeInMillis);
-            } else {
-                d = new Date(dateVal);
-            }
-            if (isNaN(d.getTime())) return String(dateVal);
-            return d.toLocaleString();
-        } catch (e) {
-            return String(dateVal);
+    function renderContent(data) {
+        var area = document.getElementById('msg-content-area');
+        if (!data) {
+            area.innerHTML = '<pre style="color:#999;font-style:italic;">No content available.</pre>';
+        } else {
+            area.innerHTML = '<pre>' + esc(data) + '</pre>';
         }
     }
 
-    function formatNumber(n) {
-        if (n === undefined || n === null) return '0';
-        return Number(n).toLocaleString();
+    function statusBadge(status) {
+        var cls = 'bullet-gray';
+        switch (status) {
+            case 'RECEIVED': cls = 'bullet-blue'; break;
+            case 'FILTERED': cls = 'bullet-yellow'; break;
+            case 'TRANSFORMED': cls = 'bullet-blue'; break;
+            case 'SENT': cls = 'bullet-green'; break;
+            case 'QUEUED': cls = 'bullet-orange'; break;
+            case 'ERROR': cls = 'bullet-red'; break;
+        }
+        return '<span class="status-bullet ' + cls + '"></span> <span class="state-text">' + esc(status) + '</span>';
     }
 
-    function escapeHtml(str) {
-        if (!str) return '';
-        var div = document.createElement('div');
-        div.appendChild(document.createTextNode(String(str)));
-        return div.innerHTML;
+    function reprocessSelected() {
+        if (!selectedMessage || !currentChannelId) return;
+        MirthAPI.reprocessMessage(currentChannelId, selectedMessage.messageId, false)
+            .then(function () { App.showToast('Reprocess started for message #' + selectedMessage.messageId, 'success'); })
+            .catch(function (err) { App.showToast('Reprocess failed: ' + err.message, 'danger'); });
     }
 
-    function escapeAttr(str) {
-        return escapeHtml(str).replace(/"/g, '&quot;');
+    function resetFilters() {
+        document.getElementById('msg-text-search').value = '';
+        document.getElementById('msg-start-date').value = '';
+        document.getElementById('msg-end-date').value = '';
+        document.getElementById('msg-id-min').value = '';
+        document.getElementById('msg-id-max').value = '';
+        document.querySelectorAll('.msg-status-cb').forEach(function (cb) { cb.checked = true; });
+        currentOffset = 0;
     }
 
-    function destroy() {}
+    function prevPage() { currentOffset = Math.max(0, currentOffset - currentLimit); doSearch(); }
+    function nextPage() { currentOffset += currentLimit; doSearch(); }
+
+    function fmtDate(d) {
+        if (!d) return '';
+        try {
+            var date;
+            if (typeof d === 'string') date = new Date(d);
+            else if (d.time) date = new Date(d.time);
+            else if (d.timeInMillis) date = new Date(d.timeInMillis);
+            else date = new Date(d);
+            if (isNaN(date.getTime())) return '';
+            return date.toLocaleString(undefined, { month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' });
+        } catch (e) { return ''; }
+    }
+
+    function esc(s) { return s ? String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;') : ''; }
+    function escAttr(s) { return esc(s).replace(/"/g,'&quot;'); }
+
+    function destroy() { selectedMessage = null; currentMessages = []; }
 
     return { render: render };
 })();

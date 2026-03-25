@@ -1,64 +1,81 @@
 /**
- * Dashboard View - Shows channel statuses and statistics.
+ * Dashboard View - Channel status tree table with statistics.
+ * Mimics the classic Mirth administrator dashboard layout.
  */
 var DashboardView = (function () {
     'use strict';
 
     var refreshTimer = null;
     var REFRESH_INTERVAL = 5000;
+    var useLifetimeStats = false;
+    var selectedChannelId = null;
 
     function render(container) {
         container.innerHTML =
-            '<div class="container-fluid py-4">' +
-                '<div class="d-flex justify-content-between align-items-center mb-4">' +
-                    '<h4 class="mb-0"><i class="bi bi-speedometer2 me-2"></i>Dashboard</h4>' +
-                    '<div class="d-flex align-items-center gap-2">' +
-                        '<input type="text" id="dash-filter" class="form-control form-control-sm" ' +
-                            'placeholder="Filter channels..." style="width: 200px;">' +
-                        '<div class="form-check form-switch ms-2">' +
-                            '<input class="form-check-input" type="checkbox" id="dash-auto-refresh" checked>' +
-                            '<label class="form-check-label small" for="dash-auto-refresh">Auto-refresh</label>' +
+            '<div class="dash-split">' +
+                '<div class="dash-split-top">' +
+                    '<!-- Toolbar -->' +
+                    '<div class="dash-toolbar">' +
+                        '<label for="dash-filter">Filter:</label>' +
+                        '<input type="text" id="dash-filter" placeholder="Channel name or tag..." style="width:180px;">' +
+                        '<div class="toolbar-sep"></div>' +
+                        '<div class="toolbar-radio-group">' +
+                            '<button class="toolbar-radio active" id="dash-stats-current">Current Statistics</button>' +
+                            '<button class="toolbar-radio" id="dash-stats-lifetime">Lifetime Statistics</button>' +
                         '</div>' +
-                        '<button class="btn btn-outline-secondary btn-sm" id="dash-refresh-btn" title="Refresh">' +
-                            '<i class="bi bi-arrow-clockwise"></i>' +
-                        '</button>' +
+                        '<div class="toolbar-sep"></div>' +
+                        '<label style="min-width:unset;">' +
+                            '<input type="checkbox" id="dash-include-undeployed"> Include Undeployed' +
+                        '</label>' +
+                    '</div>' +
+                    '<!-- Table -->' +
+                    '<div class="data-table-wrap">' +
+                        '<table class="data-table" id="dash-table">' +
+                            '<thead>' +
+                                '<tr>' +
+                                    '<th style="width:28px;"></th>' +
+                                    '<th>Name</th>' +
+                                    '<th style="width:50px;" class="text-right">Rev \u0394</th>' +
+                                    '<th style="width:130px;">Last Deployed</th>' +
+                                    '<th style="width:80px;" class="text-right">Received</th>' +
+                                    '<th style="width:80px;" class="text-right">Filtered</th>' +
+                                    '<th style="width:70px;" class="text-right">Queued</th>' +
+                                    '<th style="width:80px;" class="text-right">Sent</th>' +
+                                    '<th style="width:80px;" class="text-right">Errored</th>' +
+                                '</tr>' +
+                            '</thead>' +
+                            '<tbody id="dash-body">' +
+                                '<tr><td colspan="9" class="loading-indicator">' +
+                                    '<span class="loading-spinner"></span> Loading channel statuses...' +
+                                '</td></tr>' +
+                            '</tbody>' +
+                        '</table>' +
                     '</div>' +
                 '</div>' +
-                '<!-- Summary Cards -->' +
-                '<div class="row g-3 mb-4" id="dash-summary"></div>' +
-                '<!-- Channel Status Table -->' +
-                '<div class="card shadow-sm">' +
-                    '<div class="card-body p-0">' +
-                        '<div class="table-responsive">' +
-                            '<table class="table table-hover mb-0" id="dash-table">' +
-                                '<thead class="table-light">' +
-                                    '<tr>' +
-                                        '<th style="width: 30px;"></th>' +
-                                        '<th>Channel Name</th>' +
-                                        '<th>State</th>' +
-                                        '<th class="text-end">Received</th>' +
-                                        '<th class="text-end">Filtered</th>' +
-                                        '<th class="text-end">Queued</th>' +
-                                        '<th class="text-end">Sent</th>' +
-                                        '<th class="text-end">Errored</th>' +
-                                        '<th style="width: 140px;">Actions</th>' +
-                                    '</tr>' +
-                                '</thead>' +
-                                '<tbody id="dash-body">' +
-                                    '<tr><td colspan="9" class="text-center py-4">' +
-                                        '<div class="spinner-border text-primary" role="status"></div>' +
-                                        '<p class="text-muted mt-2">Loading channels...</p>' +
-                                    '</td></tr>' +
-                                '</tbody>' +
-                            '</table>' +
-                        '</div>' +
+                '<div class="dash-split-bottom">' +
+                    '<div class="tab-bar">' +
+                        '<button class="tab-btn active" data-tab="summary">Channel Summary</button>' +
+                    '</div>' +
+                    '<div class="tab-content" id="dash-tab-content">' +
+                        'Select a channel to view details.' +
                     '</div>' +
                 '</div>' +
             '</div>';
 
-        document.getElementById('dash-refresh-btn').addEventListener('click', loadData);
-        document.getElementById('dash-auto-refresh').addEventListener('change', toggleAutoRefresh);
-        document.getElementById('dash-filter').addEventListener('input', onFilterChange);
+        // Event listeners
+        document.getElementById('dash-filter').addEventListener('input', debounce(onFilterChange, 200));
+        document.getElementById('dash-stats-current').addEventListener('click', function () { setStatsMode(false); });
+        document.getElementById('dash-stats-lifetime').addEventListener('click', function () { setStatsMode(true); });
+        document.getElementById('dash-include-undeployed').addEventListener('change', loadData);
+
+        // Set task pane actions
+        App.setTaskActions('Dashboard Tasks', [
+            { icon: 'bi-arrow-clockwise', label: 'Refresh', shortcut: 'R', action: loadData },
+            { icon: 'bi-play-fill', label: 'Start Channel', shortcut: '', action: function () { channelAction('start'); }, id: 'task-start' },
+            { icon: 'bi-pause-fill', label: 'Pause Channel', shortcut: '', action: function () { channelAction('pause'); }, id: 'task-pause' },
+            { icon: 'bi-stop-fill', label: 'Stop Channel', shortcut: '', action: function () { channelAction('stop'); }, id: 'task-stop' },
+            { icon: 'bi-envelope-open', label: 'View Messages', shortcut: '', action: viewMessages, id: 'task-view-messages' }
+        ]);
 
         loadData();
         startAutoRefresh();
@@ -67,140 +84,86 @@ var DashboardView = (function () {
     }
 
     function loadData() {
-        var filterVal = '';
-        var filterEl = document.getElementById('dash-filter');
-        if (filterEl) filterVal = filterEl.value.trim();
+        var includeUndeployed = document.getElementById('dash-include-undeployed');
+        var undeployed = includeUndeployed ? includeUndeployed.checked : false;
 
-        MirthAPI.getChannelStatuses(null, true)
+        MirthAPI.getChannelStatuses(null, undeployed)
             .then(function (statuses) {
                 if (!document.getElementById('dash-body')) return;
-                renderSummary(statuses);
-                renderTable(statuses, filterVal);
+                renderTable(statuses);
             })
             .catch(function (err) {
                 if (!document.getElementById('dash-body')) return;
                 document.getElementById('dash-body').innerHTML =
-                    '<tr><td colspan="9" class="text-center text-danger py-4">' +
-                    '<i class="bi bi-exclamation-triangle me-2"></i>Failed to load dashboard: ' +
-                    escapeHtml(err.message) + '</td></tr>';
+                    '<tr class="empty-row"><td colspan="9">Failed to load: ' + esc(err.message) + '</td></tr>';
             });
     }
 
-    function renderSummary(statuses) {
-        var channels = statuses.filter(function (s) { return !s.childStatuses || s.statusType === 'CHANNEL'; });
-        var started = 0, stopped = 0, paused = 0, errored = 0;
-        var totalReceived = 0, totalSent = 0, totalErrored = 0;
-
-        channels.forEach(function (ch) {
-            var state = getState(ch);
-            if (state === 'STARTED') started++;
-            else if (state === 'STOPPED') stopped++;
-            else if (state === 'PAUSED') paused++;
-
-            var stats = ch.statistics || {};
-            totalReceived += stats.RECEIVED || 0;
-            totalSent += stats.SENT || 0;
-            totalErrored += stats.ERROR || 0;
-            if ((stats.ERROR || 0) > 0) errored++;
-        });
-
-        var summaryEl = document.getElementById('dash-summary');
-        if (!summaryEl) return;
-
-        summaryEl.innerHTML =
-            summaryCard('bi-check-circle-fill text-success', 'Started', started, 'success') +
-            summaryCard('bi-stop-circle-fill text-danger', 'Stopped', stopped, 'danger') +
-            summaryCard('bi-pause-circle-fill text-warning', 'Paused', paused, 'warning') +
-            summaryCard('bi-arrow-down-circle text-info', 'Total Received', formatNumber(totalReceived), 'info') +
-            summaryCard('bi-arrow-up-circle text-primary', 'Total Sent', formatNumber(totalSent), 'primary') +
-            summaryCard('bi-exclamation-triangle-fill text-danger', 'With Errors', errored, 'danger');
-    }
-
-    function summaryCard(icon, label, value, color) {
-        return '<div class="col-xl-2 col-md-4 col-sm-6">' +
-            '<div class="card border-' + color + ' border-start border-4 shadow-sm h-100">' +
-                '<div class="card-body py-2 px-3">' +
-                    '<div class="d-flex justify-content-between align-items-center">' +
-                        '<div>' +
-                            '<div class="text-muted small">' + label + '</div>' +
-                            '<div class="fw-bold fs-5">' + value + '</div>' +
-                        '</div>' +
-                        '<i class="bi ' + icon + ' fs-3"></i>' +
-                    '</div>' +
-                '</div>' +
-            '</div>' +
-        '</div>';
-    }
-
-    function renderTable(statuses, filter) {
+    function renderTable(statuses) {
         var tbody = document.getElementById('dash-body');
         if (!tbody) return;
 
-        // Filter to only channel-level statuses
-        var channels = statuses.filter(function (s) {
+        var filter = (document.getElementById('dash-filter').value || '').toLowerCase();
+
+        // Filter to channel-level statuses
+        var channels = (statuses || []).filter(function (s) {
             return !s.statusType || s.statusType === 'CHANNEL';
         });
 
         if (filter) {
-            var lowerFilter = filter.toLowerCase();
             channels = channels.filter(function (ch) {
-                return (ch.name || '').toLowerCase().indexOf(lowerFilter) !== -1 ||
-                       (ch.channelId || '').toLowerCase().indexOf(lowerFilter) !== -1;
+                return (ch.name || '').toLowerCase().indexOf(filter) !== -1 ||
+                       (ch.channelId || '').toLowerCase().indexOf(filter) !== -1;
             });
         }
 
         if (channels.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="9" class="text-center text-muted py-4">' +
-                'No channels found.</td></tr>';
+            tbody.innerHTML = '<tr class="empty-row"><td colspan="9">No channels found.</td></tr>';
             return;
         }
 
         var html = '';
         channels.forEach(function (ch) {
-            var state = getState(ch);
-            var stats = ch.statistics || {};
-            var received = stats.RECEIVED || 0;
-            var filtered = stats.FILTERED || 0;
-            var queued = ch.queued || 0;
-            var sent = stats.SENT || 0;
-            var errored = stats.ERROR || 0;
+            var state = ch.state || ch.deployedState || 'UNKNOWN';
+            var stats = useLifetimeStats ? (ch.lifetimeStatistics || ch.statistics || {}) : (ch.statistics || {});
+            var revDelta = ch.deployedRevisionDelta || 0;
+            var deployed = ch.deployedDate ? formatDate(ch.deployedDate) : '';
+            var isSelected = ch.channelId === selectedChannelId;
 
-            html += '<tr class="channel-row" data-channel-id="' + escapeAttr(ch.channelId) + '">' +
-                '<td>' + stateIcon(state) + '</td>' +
+            html += '<tr class="channel-row' + (isSelected ? ' selected' : '') + '" data-channel-id="' + escAttr(ch.channelId) + '" data-channel-name="' + escAttr(ch.name) + '">' +
+                '<td>' + bulletForState(state) + '</td>' +
                 '<td>' +
-                    '<a href="#/messages?channelId=' + encodeURIComponent(ch.channelId) + '" class="text-decoration-none fw-medium">' +
-                        escapeHtml(ch.name || ch.channelId) +
-                    '</a>' +
-                    (ch.deployedRevisionDelta > 0 ?
-                        ' <span class="badge bg-warning text-dark" title="Undeployed changes">modified</span>' : '') +
+                    '<i class="bi bi-hdd-network" style="font-size:12px;color:#666;margin-right:4px;"></i>' +
+                    esc(ch.name || ch.channelId) +
+                    (revDelta > 0 ? '<span class="badge-modified">modified</span>' : '') +
                 '</td>' +
-                '<td>' + stateBadge(state) + '</td>' +
-                '<td class="text-end">' + formatNumber(received) + '</td>' +
-                '<td class="text-end">' + formatNumber(filtered) + '</td>' +
-                '<td class="text-end">' + (queued > 0 ? '<span class="text-warning fw-bold">' + formatNumber(queued) + '</span>' : '0') + '</td>' +
-                '<td class="text-end">' + formatNumber(sent) + '</td>' +
-                '<td class="text-end">' + (errored > 0 ? '<span class="text-danger fw-bold">' + formatNumber(errored) + '</span>' : '0') + '</td>' +
-                '<td>' + channelActions(ch.channelId, state) + '</td>' +
+                '<td class="text-right">' + (revDelta > 0 ? revDelta : '') + '</td>' +
+                '<td>' + deployed + '</td>' +
+                '<td class="text-right">' + fmtN(stats.RECEIVED) + '</td>' +
+                '<td class="text-right">' + fmtN(stats.FILTERED) + '</td>' +
+                '<td class="text-right">' + fmtQueued(ch.queued) + '</td>' +
+                '<td class="text-right">' + fmtN(stats.SENT) + '</td>' +
+                '<td class="text-right">' + fmtError(stats.ERROR) + '</td>' +
             '</tr>';
 
-            // Render child connector statuses
-            if (ch.childStatuses && ch.childStatuses.length > 0) {
+            // Connector sub-rows
+            if (ch.childStatuses) {
                 ch.childStatuses.forEach(function (child) {
-                    var childState = getState(child);
-                    var childStats = child.statistics || {};
-                    html += '<tr class="connector-row">' +
-                        '<td></td>' +
-                        '<td class="ps-4 text-muted small">' +
-                            '<i class="bi bi-arrow-return-right me-1"></i>' +
-                            escapeHtml(child.name || 'Connector ' + child.metaDataId) +
+                    var cState = child.state || child.deployedState || 'UNKNOWN';
+                    var cStats = useLifetimeStats ? (child.lifetimeStatistics || child.statistics || {}) : (child.statistics || {});
+                    var icon = child.metaDataId === 0 ? 'bi-box-arrow-in-right' : 'bi-box-arrow-right';
+                    html += '<tr data-channel-id="' + escAttr(ch.channelId) + '">' +
+                        '<td>' + bulletForState(cState) + '</td>' +
+                        '<td class="tree-indent">' +
+                            '<i class="bi ' + icon + '" style="font-size:11px;color:#888;margin-right:4px;"></i>' +
+                            esc(child.name || 'Connector ' + child.metaDataId) +
                         '</td>' +
-                        '<td>' + stateBadge(childState) + '</td>' +
-                        '<td class="text-end small">' + formatNumber(childStats.RECEIVED || 0) + '</td>' +
-                        '<td class="text-end small">' + formatNumber(childStats.FILTERED || 0) + '</td>' +
-                        '<td class="text-end small">' + (child.queued > 0 ? '<span class="text-warning">' + formatNumber(child.queued) + '</span>' : '0') + '</td>' +
-                        '<td class="text-end small">' + formatNumber(childStats.SENT || 0) + '</td>' +
-                        '<td class="text-end small">' + (childStats.ERROR > 0 ? '<span class="text-danger">' + formatNumber(childStats.ERROR) + '</span>' : '0') + '</td>' +
-                        '<td></td>' +
+                        '<td></td><td></td>' +
+                        '<td class="text-right">' + fmtN(cStats.RECEIVED) + '</td>' +
+                        '<td class="text-right">' + fmtN(cStats.FILTERED) + '</td>' +
+                        '<td class="text-right">' + fmtQueued(child.queued) + '</td>' +
+                        '<td class="text-right">' + fmtN(cStats.SENT) + '</td>' +
+                        '<td class="text-right">' + fmtError(cStats.ERROR) + '</td>' +
                     '</tr>';
                 });
             }
@@ -208,28 +171,55 @@ var DashboardView = (function () {
 
         tbody.innerHTML = html;
 
-        // Attach action listeners
-        tbody.querySelectorAll('[data-action]').forEach(function (btn) {
-            btn.addEventListener('click', onChannelAction);
+        // Row click handlers
+        tbody.querySelectorAll('.channel-row').forEach(function (row) {
+            row.addEventListener('click', function () { onRowClick(this); });
+            row.addEventListener('dblclick', function () { viewMessagesForChannel(this.getAttribute('data-channel-id')); });
         });
     }
 
-    function onChannelAction(e) {
-        var btn = e.currentTarget;
-        var action = btn.getAttribute('data-action');
-        var channelId = btn.getAttribute('data-channel-id');
+    function onRowClick(row) {
+        // Deselect previous
+        var prev = document.querySelector('.channel-row.selected');
+        if (prev) prev.classList.remove('selected');
+        row.classList.add('selected');
+        selectedChannelId = row.getAttribute('data-channel-id');
 
-        btn.disabled = true;
-        var originalHtml = btn.innerHTML;
-        btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
+        // Update bottom panel
+        var name = row.getAttribute('data-channel-name');
+        var tabContent = document.getElementById('dash-tab-content');
+        if (tabContent) {
+            tabContent.innerHTML =
+                '<strong>' + esc(name) + '</strong> &mdash; Channel ID: <code>' + esc(selectedChannelId) + '</code>';
+        }
+
+        // Enable/disable task actions
+        updateTaskStates();
+    }
+
+    function updateTaskStates() {
+        // Tasks depend on selection
+        var hasSelection = !!selectedChannelId;
+        ['task-start', 'task-pause', 'task-stop', 'task-view-messages'].forEach(function (id) {
+            var el = document.getElementById(id);
+            if (el) {
+                if (hasSelection) el.classList.remove('disabled');
+                else el.classList.add('disabled');
+            }
+        });
+    }
+
+    function channelAction(action) {
+        if (!selectedChannelId) return;
+        App.showWorking(true);
 
         var apiCall;
         switch (action) {
-            case 'start': apiCall = MirthAPI.startChannel(channelId); break;
-            case 'stop': apiCall = MirthAPI.stopChannel(channelId); break;
-            case 'pause': apiCall = MirthAPI.pauseChannel(channelId); break;
-            case 'resume': apiCall = MirthAPI.resumeChannel(channelId); break;
-            case 'halt': apiCall = MirthAPI.haltChannel(channelId); break;
+            case 'start': apiCall = MirthAPI.startChannel(selectedChannelId); break;
+            case 'stop': apiCall = MirthAPI.stopChannel(selectedChannelId); break;
+            case 'pause': apiCall = MirthAPI.pauseChannel(selectedChannelId); break;
+            case 'resume': apiCall = MirthAPI.resumeChannel(selectedChannelId); break;
+            case 'halt': apiCall = MirthAPI.haltChannel(selectedChannelId); break;
             default: return;
         }
 
@@ -239,81 +229,28 @@ var DashboardView = (function () {
                 setTimeout(loadData, 1000);
             })
             .catch(function (err) {
-                App.showToast('Failed to ' + action + ' channel: ' + err.message, 'danger');
+                App.showToast('Failed to ' + action + ': ' + err.message, 'danger');
             })
-            .finally(function () {
-                btn.disabled = false;
-                btn.innerHTML = originalHtml;
-            });
+            .finally(function () { App.showWorking(false); });
     }
 
-    function channelActions(channelId, state) {
-        var actions = '';
-        var cid = escapeAttr(channelId);
-
-        if (state === 'STOPPED' || state === 'UNDEPLOYED') {
-            actions += '<button class="btn btn-sm btn-outline-success me-1" data-action="start" data-channel-id="' + cid + '" title="Start">' +
-                '<i class="bi bi-play-fill"></i></button>';
-        }
-        if (state === 'STARTED') {
-            actions += '<button class="btn btn-sm btn-outline-warning me-1" data-action="pause" data-channel-id="' + cid + '" title="Pause">' +
-                '<i class="bi bi-pause-fill"></i></button>';
-            actions += '<button class="btn btn-sm btn-outline-danger me-1" data-action="stop" data-channel-id="' + cid + '" title="Stop">' +
-                '<i class="bi bi-stop-fill"></i></button>';
-        }
-        if (state === 'PAUSED') {
-            actions += '<button class="btn btn-sm btn-outline-success me-1" data-action="resume" data-channel-id="' + cid + '" title="Resume">' +
-                '<i class="bi bi-play-fill"></i></button>';
-            actions += '<button class="btn btn-sm btn-outline-danger me-1" data-action="stop" data-channel-id="' + cid + '" title="Stop">' +
-                '<i class="bi bi-stop-fill"></i></button>';
-        }
-
-        return '<div class="btn-group btn-group-sm">' + actions + '</div>';
+    function viewMessages() {
+        if (selectedChannelId) viewMessagesForChannel(selectedChannelId);
     }
 
-    function getState(status) {
-        if (status.state) return status.state;
-        if (status.deployedState) return status.deployedState;
-        return 'UNKNOWN';
+    function viewMessagesForChannel(channelId) {
+        Router.navigate('/messages?channelId=' + encodeURIComponent(channelId));
     }
 
-    function stateIcon(state) {
-        switch (state) {
-            case 'STARTED': return '<i class="bi bi-circle-fill text-success" title="Started"></i>';
-            case 'STOPPED': return '<i class="bi bi-circle-fill text-danger" title="Stopped"></i>';
-            case 'PAUSED': return '<i class="bi bi-circle-fill text-warning" title="Paused"></i>';
-            case 'DEPLOYING': return '<i class="bi bi-circle-fill text-info" title="Deploying"></i>';
-            case 'UNDEPLOYED': return '<i class="bi bi-circle text-secondary" title="Undeployed"></i>';
-            default: return '<i class="bi bi-circle text-muted" title="' + escapeAttr(state) + '"></i>';
-        }
-    }
-
-    function stateBadge(state) {
-        var cls = 'secondary';
-        switch (state) {
-            case 'STARTED': cls = 'success'; break;
-            case 'STOPPED': cls = 'danger'; break;
-            case 'PAUSED': cls = 'warning'; break;
-            case 'DEPLOYING': cls = 'info'; break;
-        }
-        return '<span class="badge bg-' + cls + '">' + escapeHtml(state) + '</span>';
+    function setStatsMode(lifetime) {
+        useLifetimeStats = lifetime;
+        document.getElementById('dash-stats-current').classList.toggle('active', !lifetime);
+        document.getElementById('dash-stats-lifetime').classList.toggle('active', lifetime);
+        loadData();
     }
 
     function onFilterChange() {
-        var filter = document.getElementById('dash-filter').value.trim();
-        MirthAPI.getChannelStatuses(null, true)
-            .then(function (statuses) {
-                renderTable(statuses, filter);
-            });
-    }
-
-    function toggleAutoRefresh() {
-        var checked = document.getElementById('dash-auto-refresh').checked;
-        if (checked) {
-            startAutoRefresh();
-        } else {
-            stopAutoRefresh();
-        }
+        loadData();
     }
 
     function startAutoRefresh() {
@@ -322,30 +259,59 @@ var DashboardView = (function () {
     }
 
     function stopAutoRefresh() {
-        if (refreshTimer) {
-            clearInterval(refreshTimer);
-            refreshTimer = null;
+        if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null; }
+    }
+
+    // Helpers
+    function bulletForState(state) {
+        var cls = 'bullet-gray';
+        switch (state) {
+            case 'STARTED': cls = 'bullet-green'; break;
+            case 'STOPPED': cls = 'bullet-red'; break;
+            case 'PAUSED': cls = 'bullet-yellow'; break;
+            case 'DEPLOYING': cls = 'bullet-blue'; break;
         }
+        return '<span class="status-bullet ' + cls + '" title="' + esc(state) + '"></span>';
     }
 
-    function formatNumber(n) {
-        if (n === undefined || n === null) return '0';
-        return n.toLocaleString();
+    function fmtN(n) {
+        if (!n) return '0';
+        return Number(n).toLocaleString();
     }
 
-    function escapeHtml(str) {
-        if (!str) return '';
-        var div = document.createElement('div');
-        div.appendChild(document.createTextNode(str));
-        return div.innerHTML;
+    function fmtQueued(n) {
+        if (!n || n === 0) return '0';
+        return '<span class="stat-queued">' + Number(n).toLocaleString() + '</span>';
     }
 
-    function escapeAttr(str) {
-        return escapeHtml(str).replace(/"/g, '&quot;');
+    function fmtError(n) {
+        if (!n || n === 0) return '0';
+        return '<span class="stat-error">' + Number(n).toLocaleString() + '</span>';
+    }
+
+    function formatDate(d) {
+        if (!d) return '';
+        try {
+            var date;
+            if (typeof d === 'string') date = new Date(d);
+            else if (d.time) date = new Date(d.time);
+            else if (d.timeInMillis) date = new Date(d.timeInMillis);
+            else date = new Date(d);
+            if (isNaN(date.getTime())) return '';
+            return date.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+        } catch (e) { return ''; }
+    }
+
+    function esc(s) { return s ? String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;') : ''; }
+    function escAttr(s) { return esc(s).replace(/"/g,'&quot;'); }
+
+    function debounce(fn, ms) {
+        var t; return function () { clearTimeout(t); t = setTimeout(fn, ms); };
     }
 
     function destroy() {
         stopAutoRefresh();
+        selectedChannelId = null;
     }
 
     return { render: render };
