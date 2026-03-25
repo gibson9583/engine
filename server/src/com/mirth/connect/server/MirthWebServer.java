@@ -238,6 +238,14 @@ public class MirthWebServer extends Server {
         publicContextHandler.setHandler(new ResourceHandler());
         handlers.addHandler(publicContextHandler);
 
+        // Create the web admin context
+        ContextHandler webadminContextHandler = new ContextHandler();
+        webadminContextHandler.setContextPath(contextPath + "/webadmin");
+        String webadminPath = ControllerFactory.getFactory().createConfigurationController().getBaseDir() + File.separator + "webadmin";
+        webadminContextHandler.setResourceBase(webadminPath);
+        webadminContextHandler.setHandler(new ResourceHandler());
+        handlers.addHandler(webadminContextHandler);
+
         // Create Administrator Launcher installer contexts
         addLauncherInstallerContextHandlers(contextPath);
 
