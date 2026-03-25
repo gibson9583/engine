@@ -965,6 +965,7 @@
 		<mkdir dir="${setup.extensions}" />
 		<mkdir dir="${setup.public_html}" />
 		<mkdir dir="${setup.public_api_html}" />
+		<mkdir dir="${setup.webadmin}" />
 		<mkdir dir="${setup.server.lib}" />
 		<mkdir dir="${setup.client.lib}" />
 		<mkdir dir="${setup.cli.lib}" />
@@ -1000,6 +1001,13 @@
 		<copy todir="${setup.public_api_html}">
 			<fileset dir="${public_api_html}">
 				<exclude name="Thumbs.db" />
+			</fileset>
+		</copy>
+
+		<!-- copy web admin files -->
+		<copy todir="${setup.webadmin}">
+			<fileset dir="${webadmin}">
+				<exclude name=".project" />
 			</fileset>
 		</copy>
 
