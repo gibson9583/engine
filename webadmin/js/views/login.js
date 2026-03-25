@@ -32,6 +32,9 @@ var LoginView = (function () {
 
         MirthAPI.login(username, password)
             .then(function (result) {
+                console.log('[WebAdmin] Login response:', JSON.stringify(result, null, 2));
+                console.log('[WebAdmin] Response type:', typeof result);
+
                 // Handle various response formats (JSON or parsed XML)
                 var status = null;
                 if (result) {
@@ -39,6 +42,7 @@ var LoginView = (function () {
                     // If result is a string, it may be the status itself
                     if (typeof result === 'string') status = result;
                 }
+                console.log('[WebAdmin] Parsed status:', status);
 
                 if (status === 'SUCCESS' || status === 'SUCCESS_GRACE_PERIOD') {
                     if (status === 'SUCCESS_GRACE_PERIOD') {
