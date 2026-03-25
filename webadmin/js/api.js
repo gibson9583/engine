@@ -27,17 +27,76 @@ var MirthAPI = (function () {
             return response.text().then(function (text) {
                 var message = text;
                 try {
-                    var json = JSON.parse(text);
-                    message = json.message || json.error || text;
+                    var parsed = parseResponseText(text);
+                    message = parsed.message || parsed.error || text;
                 } catch (e) { /* use raw text */ }
                 return Promise.reject({ status: response.status, message: message });
             });
         }
-        var contentType = response.headers.get('Content-Type') || '';
-        if (contentType.indexOf('application/json') !== -1) {
-            return response.json();
+        // Always read as text first, then try to parse as JSON or XML
+        return response.text().then(function (text) {
+            if (!text || text.length === 0) return null;
+            return parseResponseText(text);
+        });
+    }
+
+    /**
+     * Parse response text - tries JSON first, then XML, then returns raw string.
+     */
+    function parseResponseText(text) {
+        if (!text || text.length === 0) return null;
+        var trimmed = text.trim();
+
+        // Try JSON
+        if (trimmed.charAt(0) === '{' || trimmed.charAt(0) === '[') {
+            try { return JSON.parse(trimmed); } catch (e) { /* fall through */ }
         }
-        return response.text();
+
+        // Try XML
+        if (trimmed.charAt(0) === '<') {
+            try {
+                var parser = new DOMParser();
+                var doc = parser.parseFromString(trimmed, 'text/xml');
+                var parseError = doc.querySelector('parsererror');
+                if (!parseError) {
+                    return xmlToObj(doc.documentElement);
+                }
+            } catch (e) { /* fall through */ }
+        }
+
+        // Return as plain string
+        return trimmed;
+    }
+
+    /**
+     * Convert an XML element to a simple JS object.
+     */
+    function xmlToObj(node) {
+        // If leaf text node
+        if (!node.children || node.children.length === 0) {
+            var text = node.textContent || '';
+            // Try to parse booleans/numbers
+            if (text === 'true') return true;
+            if (text === 'false') return false;
+            if (/^-?\d+$/.test(text) && text.length < 16) return parseInt(text, 10);
+            return text;
+        }
+
+        var obj = {};
+        for (var i = 0; i < node.children.length; i++) {
+            var child = node.children[i];
+            var key = child.tagName;
+            var value = xmlToObj(child);
+
+            // Handle repeated elements as arrays
+            if (obj.hasOwnProperty(key)) {
+                if (!Array.isArray(obj[key])) obj[key] = [obj[key]];
+                obj[key].push(value);
+            } else {
+                obj[key] = value;
+            }
+        }
+        return obj;
     }
 
     function get(path, params) {

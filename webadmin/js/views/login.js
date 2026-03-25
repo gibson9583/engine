@@ -32,11 +32,19 @@ var LoginView = (function () {
 
         MirthAPI.login(username, password)
             .then(function (result) {
-                if (result && (result.status === 'SUCCESS' || result.status === 'SUCCESS_GRACE_PERIOD')) {
-                    if (result.status === 'SUCCESS_GRACE_PERIOD') {
+                // Handle various response formats (JSON or parsed XML)
+                var status = null;
+                if (result) {
+                    status = result.status || result.Status || null;
+                    // If result is a string, it may be the status itself
+                    if (typeof result === 'string') status = result;
+                }
+
+                if (status === 'SUCCESS' || status === 'SUCCESS_GRACE_PERIOD') {
+                    if (status === 'SUCCESS_GRACE_PERIOD') {
                         App.showToast('Your password will expire soon. Please change it.', 'warning');
                     }
-                    App.onLoginSuccess(result.updatedUsername || username);
+                    App.onLoginSuccess(result.updatedUsername || result.UpdatedUsername || username);
                 } else {
                     showError(getErrorMessage(result));
                     showProgress(false);
