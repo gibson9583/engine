@@ -150,7 +150,7 @@ public interface ConfigurationServletInterface extends BaseServletInterface {
     @Operation(summary = "Updates all of the channels, alerts and properties stored on the server.")
     @MirthOperation(name = "setServerConfiguration", display = "Set server configuration", permission = Permissions.SERVER_CONFIGURATION_RESTORE, type = ExecuteType.ASYNC)
     public void setServerConfiguration(// @formatter:off
-            @Param("serverConfiguration") @RequestBody(description = "The ServerConfiguration object containing all channels, users, alerts, and properties to update.", required = true, content = {
+            @Param(value = "serverConfiguration", excludeFromAudit = true) @RequestBody(description = "The ServerConfiguration object containing all channels, users, alerts, and properties to update.", required = true, content = {
                     @Content(mediaType = MediaType.APPLICATION_XML, examples = {
                             @ExampleObject(name = "serverConfiguration", ref = "../apiexamples/server_configuration_xml") }),
                     @Content(mediaType = MediaType.APPLICATION_JSON, examples = {

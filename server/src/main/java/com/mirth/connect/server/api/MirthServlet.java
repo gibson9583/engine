@@ -64,9 +64,9 @@ public abstract class MirthServlet {
     private ChannelAuthorizer channelAuthorizer;
 
     protected ControllerFactory controllerFactory;
-    private static UserController userController;
-    private static AuthorizationController authorizationController;
-    private static ConfigurationController configurationController;
+    private UserController userController;
+    private AuthorizationController authorizationController;
+    private ConfigurationController configurationController;
 
     private String extensionName;
     private boolean bypassUser;

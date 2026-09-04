@@ -35,10 +35,15 @@ import com.mirth.connect.server.controllers.ExtensionController.InstallationResu
 
 public class ExtensionServlet extends MirthServlet implements ExtensionServletInterface {
 
-    private static final ExtensionController extensionController = ControllerFactory.getFactory().createExtensionController();
+    private final ExtensionController extensionController;
 
     public ExtensionServlet(@Context HttpServletRequest request, @Context SecurityContext sc) {
-        super(request, sc);
+        this(request, sc, ControllerFactory.getFactory());
+    }
+
+    ExtensionServlet(HttpServletRequest request, SecurityContext sc, ControllerFactory controllerFactory) {
+        super(request, sc, controllerFactory);
+        extensionController = controllerFactory.createExtensionController();
     }
 
     @Override
@@ -132,6 +137,7 @@ public class ExtensionServlet extends MirthServlet implements ExtensionServletIn
     @DontCheckAuthorized
     public void setPluginProperties(String extensionName, Properties properties, boolean mergeProperties) {
         parameterMap.put("extensionName", extensionName);
+        parameterMap.put("mergeProperties", mergeProperties);
         checkUserAuthorizedForExtension(extensionName);
         try {
             extensionController.setPluginProperties(extensionName, properties, mergeProperties);

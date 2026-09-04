@@ -66,16 +66,25 @@ import com.mirth.connect.util.MirthSSLUtil;
 public class ConfigurationServlet extends MirthServlet implements ConfigurationServletInterface {
 
     private static final Logger logger = LogManager.getLogger(ConfigurationServlet.class);
-    private static final ConfigurationController configurationController = ControllerFactory.getFactory().createConfigurationController();
-    private static final ScriptController scriptController = ControllerFactory.getFactory().createScriptController();
-    private static final ContextFactoryController contextFactoryController = ControllerFactory.getFactory().createContextFactoryController();
-    private static final ExtensionController extensionController = ControllerFactory.getFactory().createExtensionController();
-    private static final ChannelController channelController = ControllerFactory.getFactory().createChannelController();
+    private final ConfigurationController configurationController;
+    private final ScriptController scriptController;
+    private final ContextFactoryController contextFactoryController;
+    private final ExtensionController extensionController;
+    private final ChannelController channelController;
     private static final ExecutorService executor = Executors.newSingleThreadExecutor();
     private static final ObjectXMLSerializer serializer = ObjectXMLSerializer.getInstance();
 
     public ConfigurationServlet(@Context HttpServletRequest request, @Context SecurityContext sc) {
-        super(request, sc, false);
+        this(request, sc, ControllerFactory.getFactory());
+    }
+
+    ConfigurationServlet(HttpServletRequest request, SecurityContext sc, ControllerFactory controllerFactory) {
+        super(request, null, sc, false, controllerFactory);
+        configurationController = controllerFactory.createConfigurationController();
+        scriptController = controllerFactory.createScriptController();
+        contextFactoryController = controllerFactory.createContextFactoryController();
+        extensionController = controllerFactory.createExtensionController();
+        channelController = controllerFactory.createChannelController();
     }
 
     @Override
