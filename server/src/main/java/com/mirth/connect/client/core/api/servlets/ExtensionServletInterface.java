@@ -147,7 +147,7 @@ public interface ExtensionServletInterface extends BaseServletInterface {
     @Path("/{extensionName}/properties")
     @Operation(summary = "Sets properties for a specified extension.")
     @MirthOperation(name = OPERATION_PLUGIN_PROPERTIES_SET, display = "Set plugin properties")
-    public void setPluginProperties(@Param("extensionName") @RequestBody(description = "The name of the extension to retrieve.", required = true) @PathParam("extensionName") String extensionName, @Param("properties") @RequestBody(description = "description", content = {
+    public void setPluginProperties(@Param("extensionName") @RequestBody(description = "The name of the extension to retrieve.", required = true) @PathParam("extensionName") String extensionName, @Param(value = "properties", excludeFromAudit = true) @RequestBody(description = "description", content = {
             @Content(mediaType = MediaType.APPLICATION_XML, schema = @Schema(implementation = Properties.class), examples = {
                     @ExampleObject(name = "propertiesObject", ref = "../apiexamples/properties_xml") }),
             @Content(mediaType = MediaType.APPLICATION_JSON, schema = @Schema(implementation = Properties.class), examples = {
