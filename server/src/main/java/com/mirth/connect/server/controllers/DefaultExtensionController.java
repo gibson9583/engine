@@ -60,12 +60,26 @@ import com.mirth.connect.model.MetaData;
 import com.mirth.connect.model.PluginClass;
 import com.mirth.connect.model.PluginClassCondition;
 import com.mirth.connect.model.PluginMetaData;
+import com.mirth.connect.model.PropertyWriteProtection;
 import com.mirth.connect.model.converters.ObjectXMLSerializer;
 import com.mirth.connect.plugins.AuthorizationPlugin;
 import com.mirth.connect.plugins.ChannelPlugin;
 import com.mirth.connect.plugins.CodeTemplateServerPlugin;
 import com.mirth.connect.plugins.DataTypeServerPlugin;
 import com.mirth.connect.plugins.MultiFactorAuthenticationPlugin;
+import com.mirth.connect.plugins.CheckedCompareAndSet;
+import com.mirth.connect.plugins.NoChange;
+import com.mirth.connect.plugins.PluginPropertyCompletion;
+import com.mirth.connect.plugins.PluginPropertyPreparers;
+import com.mirth.connect.plugins.PluginPropertyRejectedException;
+import com.mirth.connect.plugins.PluginPropertyWriteException;
+import com.mirth.connect.plugins.PluginPropertyWriteOutcome;
+import com.mirth.connect.plugins.PluginPropertyWriteResult;
+import com.mirth.connect.plugins.PreparedPluginProperties;
+import com.mirth.connect.plugins.PreserveRejected;
+import com.mirth.connect.plugins.PropertyPersistenceDirective;
+import com.mirth.connect.plugins.PropertyWriteContext;
+import com.mirth.connect.plugins.PropertyWriteOrigin;
 import com.mirth.connect.plugins.ResourcePlugin;
 import com.mirth.connect.plugins.ServerPlugin;
 import com.mirth.connect.plugins.ServicePlugin;
@@ -80,7 +94,7 @@ import com.mirth.connect.server.util.ServerUUIDGenerator;
 public class DefaultExtensionController extends ExtensionController {
     private Logger logger = LogManager.getLogger(this.getClass());
     private ObjectXMLSerializer serializer = ObjectXMLSerializer.getInstance();
-    private ConfigurationController configurationController = ControllerFactory.getFactory().createConfigurationController();
+    private ConfigurationController configurationController;
 
     // these are plugins for specific extension points, keyed by plugin name
     // (not path)
@@ -100,7 +114,7 @@ public class DefaultExtensionController extends ExtensionController {
     private Map<String, TransmissionModeProvider> transmissionModeProviders = new LinkedHashMap<String, TransmissionModeProvider>();
     private MultiFactorAuthenticationPlugin multiFactorAuthenticationPlugin = null;
     private AuthorizationPlugin authorizationPlugin = null;
-    private ExtensionLoader extensionLoader = ExtensionLoader.getInstance();
+    private ExtensionLoader extensionLoader;
     private ExtensionStatuses extensionStatuses = ExtensionStatuses.getInstance();
 
     // singleton pattern
@@ -121,7 +135,14 @@ public class DefaultExtensionController extends ExtensionController {
     }
 
     DefaultExtensionController() {
+        this(ControllerFactory.getFactory().createConfigurationController(),
+                ExtensionLoader.getInstance());
+    }
 
+    DefaultExtensionController(ConfigurationController configurationController,
+            ExtensionLoader extensionLoader) {
+        this.configurationController = configurationController;
+        this.extensionLoader = extensionLoader;
     }
 
     @Override
@@ -215,16 +236,22 @@ public class DefaultExtensionController extends ExtensionController {
         for (List<String> classList : weightedPlugins.descendingMap().values()) {
             for (String clazzName : classList) {
                 String pluginName = pluginNameMap.get(clazzName);
+                ServerPlugin serverPlugin = null;
 
                 try {
-                    ServerPlugin serverPlugin = (ServerPlugin) Class.forName(clazzName).newInstance();
+                    serverPlugin = (ServerPlugin) Class.forName(clazzName).newInstance();
 
                     if (serverPlugin instanceof ServicePlugin) {
                         ServicePlugin servicePlugin = (ServicePlugin) serverPlugin;
                         /*
                          * load any properties that may currently be in the database
                          */
-                        Properties currentProperties = getPluginProperties(pluginName);
+                        PluginMetaData pluginMetaData = requirePluginMetaData(pluginName);
+                        Properties currentProperties = pluginMetaData.getPropertyWriteProtection()
+                                == PropertyWriteProtection.PREPARED_ONLY
+                                ? toProperties(configurationController
+                                        .readPropertiesForGroupChecked(pluginName))
+                                : getPluginProperties(pluginName);
                         /* get the default properties for the plugin */
                         Properties defaultProperties = servicePlugin.getDefaultProperties();
 
@@ -239,13 +266,22 @@ public class DefaultExtensionController extends ExtensionController {
                         }
 
                         /* save the properties to the database */
-                        setPluginProperties(pluginName, currentProperties);
+                        PluginPropertyWriteResult writeResult = setPluginProperties(pluginName,
+                                currentProperties, false, PropertyWriteContext.initialization());
+                        Properties appliedProperties;
+                        if (writeResult.getOutcome() == PluginPropertyWriteOutcome.PRESERVED_REJECTED) {
+                            appliedProperties = new Properties();
+                        } else if (isSuccessful(writeResult.getOutcome())) {
+                            appliedProperties = writeResult.getAppliedProperties();
+                        } else {
+                            throw new PluginPropertyWriteException(writeResult.getOutcome());
+                        }
 
                         /*
                          * initialize the plugin with those properties and add it to the list of
                          * loaded plugins
                          */
-                        servicePlugin.init(currentProperties);
+                        servicePlugin.init(appliedProperties);
                         servicePlugins.put(servicePlugin.getPluginPointName(), servicePlugin);
                         serverPlugins.add(servicePlugin);
                         logger.debug("sucessfully loaded server plugin: " + serverPlugin.getPluginPointName());
@@ -309,7 +345,20 @@ public class DefaultExtensionController extends ExtensionController {
                         serverPlugins.add(multiFactorAuthenticationPlugin);
                         logger.debug("sucessfully loaded server multi-factor authentication plugin: " + serverPlugin.getPluginPointName());
                     }
-                } catch (Exception e) {
+                } catch (Throwable e) {
+                    if (serverPlugin != null) {
+                        try {
+                            serverPlugin.stop();
+                        } catch (Throwable stopFailure) {
+                            e.addSuppressed(stopFailure);
+                        }
+                    }
+                    if (e instanceof VirtualMachineError) {
+                        throw (VirtualMachineError) e;
+                    }
+                    if (e instanceof ThreadDeath) {
+                        throw (ThreadDeath) e;
+                    }
                     logger.error("Error instantiating plugin: " + pluginName, e);
                 }
             }
@@ -620,6 +669,81 @@ public class DefaultExtensionController extends ExtensionController {
 
     @Override
     public void setPluginProperties(String pluginName, Properties properties, boolean mergeProperties) throws ControllerException {
+        PluginPropertyWriteResult result = setPluginProperties(pluginName, properties,
+                mergeProperties, PropertyWriteContext.pluginApi());
+        if (!isSuccessful(result.getOutcome())) {
+            throw new PluginPropertyWriteException(result.getOutcome());
+        }
+    }
+    @Override
+    public PluginPropertyWriteResult setPluginProperties(String pluginName, Properties properties,
+            boolean mergeProperties, PropertyWriteContext context) throws ControllerException {
+        PluginMetaData metadata = requirePluginMetaData(pluginName);
+        Properties incoming = copyStringProperties(properties);
+
+        if (metadata.getPropertyWriteProtection() != PropertyWriteProtection.PREPARED_ONLY) {
+            applyLegacyProperties(pluginName, incoming, mergeProperties);
+            return PluginPropertyWriteResult.withProperties(
+                    PluginPropertyWriteOutcome.LEGACY_APPLIED, incoming);
+        }
+
+        PreparedPluginProperties prepared = null;
+        boolean completionDelivered = false;
+        try {
+            prepared = PluginPropertyPreparers.prepare(pluginName, incoming, mergeProperties, context);
+            Properties canonical = prepared.getCanonicalProperties();
+            PropertyPersistenceDirective directive = prepared.getDirective();
+
+            if (directive instanceof CheckedCompareAndSet) {
+                CheckedCompareAndSet checked = (CheckedCompareAndSet) directive;
+                validateCheckedCanonical(canonical, checked);
+                AtomicPropertyWriteOutcome atomic = configurationController
+                        .compareAndSetPropertyAtomically(pluginName, checked.getPropertyName(),
+                                checked.getExpected(), canonical.getProperty(checked.getPropertyName()));
+                PluginPropertyWriteOutcome outcome = mapAtomicOutcome(atomic);
+                completionDelivered = true;
+                complete(prepared, mapCompletion(outcome), null);
+                return outcome == PluginPropertyWriteOutcome.COMMITTED
+                        ? PluginPropertyWriteResult.withProperties(outcome, canonical)
+                        : PluginPropertyWriteResult.withoutProperties(outcome);
+            }
+            if (directive instanceof NoChange) {
+                completionDelivered = true;
+                complete(prepared, PluginPropertyCompletion.NO_CHANGE, null);
+                return PluginPropertyWriteResult.withProperties(
+                        PluginPropertyWriteOutcome.NO_CHANGE, canonical);
+            }
+            if (directive instanceof PreserveRejected) {
+                if (context.getOrigin() != PropertyWriteOrigin.INITIALIZATION || mergeProperties) {
+                    throw new ControllerException("preserve_rejected_context_invalid");
+                }
+                completionDelivered = true;
+                complete(prepared, PluginPropertyCompletion.PRESERVED_REJECTED, null);
+                return PluginPropertyWriteResult.withoutProperties(
+                        PluginPropertyWriteOutcome.PRESERVED_REJECTED);
+            }
+            throw new ControllerException("unsupported_property_persistence_directive");
+        } catch (PluginPropertyRejectedException e) {
+            throw e;
+        } catch (PluginPropertyWriteException e) {
+            return PluginPropertyWriteResult.withoutProperties(e.getOutcome());
+        } catch (Exception failure) {
+            if (prepared != null && !completionDelivered) {
+                try {
+                    complete(prepared, PluginPropertyCompletion.FAILED, failure);
+                } catch (ControllerException completionFailure) {
+                    failure.addSuppressed(completionFailure);
+                }
+            }
+            if (failure instanceof ControllerException) {
+                throw (ControllerException) failure;
+            }
+            throw new ControllerException("plugin_property_preparation_failed", failure);
+        }
+    }
+
+    private void applyLegacyProperties(String pluginName, Properties properties,
+            boolean mergeProperties) {
         if (!mergeProperties) {
             configurationController.removePropertiesForGroup(pluginName);
         }
@@ -629,9 +753,107 @@ public class DefaultExtensionController extends ExtensionController {
         }
     }
 
+    private PluginMetaData requirePluginMetaData(String pluginName) throws ControllerException {
+        PluginMetaData metadata = getPluginMetaData().get(pluginName);
+        if (metadata == null) {
+            throw new ControllerException("unknown_plugin_property_namespace");
+        }
+        return metadata;
+    }
+
+    private static Properties copyStringProperties(Properties properties) throws ControllerException {
+        if (properties == null) {
+            throw new ControllerException("plugin_properties_required");
+        }
+        Properties copy = new Properties();
+        for (Object key : properties.keySet()) {
+            Object value = properties.get(key);
+            if (!(key instanceof String) || !(value instanceof String)) {
+                throw new ControllerException("plugin_properties_must_be_strings");
+            }
+            copy.setProperty((String) key, (String) value);
+        }
+        return copy;
+    }
+
+    private static void validateCheckedCanonical(Properties canonical, CheckedCompareAndSet checked)
+            throws ControllerException {
+        if (canonical.size() != 1 || !canonical.containsKey(checked.getPropertyName())
+                || canonical.getProperty(checked.getPropertyName()) == null) {
+            throw new ControllerException("checked_property_canonical_shape_invalid");
+        }
+    }
+
+    private static PluginPropertyWriteOutcome mapAtomicOutcome(AtomicPropertyWriteOutcome outcome) {
+        switch (outcome) {
+            case COMMITTED:
+                return PluginPropertyWriteOutcome.COMMITTED;
+            case CONFLICT:
+                return PluginPropertyWriteOutcome.CONFLICT;
+            case OUTCOME_UNKNOWN:
+                return PluginPropertyWriteOutcome.OUTCOME_UNKNOWN;
+            default:
+                throw new IllegalArgumentException("unknown atomic outcome");
+        }
+    }
+
+    private static PluginPropertyCompletion mapCompletion(PluginPropertyWriteOutcome outcome) {
+        switch (outcome) {
+            case COMMITTED:
+                return PluginPropertyCompletion.COMMITTED;
+            case CONFLICT:
+                return PluginPropertyCompletion.CONFLICT;
+            case OUTCOME_UNKNOWN:
+                return PluginPropertyCompletion.OUTCOME_UNKNOWN;
+            default:
+                throw new IllegalArgumentException("outcome has no completion mapping");
+        }
+    }
+
+    private static void complete(PreparedPluginProperties prepared,
+            PluginPropertyCompletion outcome, Throwable failure) throws ControllerException {
+        if ((outcome == PluginPropertyCompletion.FAILED) != (failure != null)) {
+            throw new ControllerException("property_completion_failure_contract_invalid");
+        }
+        try {
+            prepared.getCompletion().complete(outcome, failure);
+        } catch (Exception e) {
+            throw new ControllerException("property_completion_failed", e);
+        }
+    }
+
+    private static boolean isSuccessful(PluginPropertyWriteOutcome outcome) {
+        return outcome == PluginPropertyWriteOutcome.COMMITTED
+                || outcome == PluginPropertyWriteOutcome.NO_CHANGE
+                || outcome == PluginPropertyWriteOutcome.LEGACY_APPLIED;
+    }
     @Override
     public Properties getPluginProperties(String pluginName, Set<String> propertyKeys) throws ControllerException {
-        return ControllerFactory.getFactory().createConfigurationController().getPropertiesForGroup(pluginName, propertyKeys);
+        PluginMetaData metadata = requirePluginMetaData(pluginName);
+        if (metadata.getPropertyWriteProtection() == PropertyWriteProtection.PREPARED_ONLY) {
+            Properties properties = toProperties(
+                    configurationController.readPropertiesForGroupChecked(pluginName));
+            if (propertyKeys == null || propertyKeys.isEmpty()) {
+                return properties;
+            }
+            Properties filtered = new Properties();
+            for (String key : propertyKeys) {
+                String value = properties.getProperty(key);
+                if (value != null) {
+                    filtered.setProperty(key, value);
+                }
+            }
+            return filtered;
+        }
+        return configurationController.getPropertiesForGroup(pluginName, propertyKeys);
+    }
+
+    private static Properties toProperties(Map<String, String> values) {
+        Properties properties = new Properties();
+        for (Map.Entry<String, String> entry : values.entrySet()) {
+            properties.setProperty(entry.getKey(), entry.getValue());
+        }
+        return properties;
     }
 
     @Override

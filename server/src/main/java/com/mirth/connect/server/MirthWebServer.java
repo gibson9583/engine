@@ -98,8 +98,10 @@ import org.reflections.util.ConfigurationBuilder;
 
 import com.mirth.connect.client.core.Version;
 import com.mirth.connect.client.core.api.BaseServletInterface;
+import com.mirth.connect.plugins.ServicePlugin;
 import com.mirth.connect.client.core.api.Replaces;
 import com.mirth.connect.model.ApiProvider;
+import com.mirth.connect.model.PropertyWriteProtection;
 import com.mirth.connect.model.MetaData;
 import com.mirth.connect.server.api.MirthServlet;
 import com.mirth.connect.server.api.providers.ApiOriginFilter;
@@ -569,7 +571,18 @@ public class MirthWebServer extends Server {
 
         // Add JAX-RS providers from extensions
         for (MetaData metaData : CollectionUtils.union(extensionController.getPluginMetaData().values(), extensionController.getConnectorMetaData().values())) {
-            if (extensionController.isExtensionEnabled(metaData.getName())) {
+            boolean operationallyAvailable = true;
+            if (metaData instanceof com.mirth.connect.model.PluginMetaData
+                    && ((com.mirth.connect.model.PluginMetaData) metaData)
+                            .getPropertyWriteProtection() == PropertyWriteProtection.PREPARED_ONLY) {
+                ServicePlugin owner = extensionController.getServicePlugins().get(metaData.getName());
+                operationallyAvailable = owner != null
+                        && metaData.getName().equals(owner.getPluginPointName())
+                        && com.mirth.connect.plugins.PluginPropertyPreparers.isOperational(
+                                metaData.getName(), owner);
+            }
+            if (extensionController.isExtensionEnabled(metaData.getName())
+                    && operationallyAvailable) {
                 for (ApiProvider apiProvider : metaData.getApiProviders(version)) {
                     try {
                         switch (apiProvider.getType()) {

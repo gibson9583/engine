@@ -11,6 +11,7 @@ package com.mirth.connect.server.util;
 
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.ReadWriteLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
@@ -58,6 +59,11 @@ public class StatementLock {
         if (vacuumLockRequired) {
             vacuumLock.readLock().unlock();
         }
+    }
+
+    /** Attempts a read lock for bounded controller operations. */
+    public boolean tryReadLock(long timeout, TimeUnit unit) throws InterruptedException {
+        return !vacuumLockRequired || vacuumLock.readLock().tryLock(timeout, unit);
     }
 
     public void writeLock() {

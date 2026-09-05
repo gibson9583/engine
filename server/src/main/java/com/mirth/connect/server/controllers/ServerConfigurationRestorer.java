@@ -32,12 +32,18 @@ import com.mirth.connect.model.ResourceProperties;
 import com.mirth.connect.model.ServerConfiguration;
 import com.mirth.connect.model.ServerEventContext;
 import com.mirth.connect.model.ServerSettings;
+import com.mirth.connect.model.PluginMetaData;
+import com.mirth.connect.model.PropertyWriteProtection;
 import com.mirth.connect.model.alert.AlertModel;
 import com.mirth.connect.model.codetemplates.CodeTemplate;
 import com.mirth.connect.model.codetemplates.CodeTemplateLibrary;
 import com.mirth.connect.model.converters.ObjectXMLSerializer;
 import com.mirth.connect.plugins.MergePropertiesInterface;
 import com.mirth.connect.plugins.ServicePlugin;
+import com.mirth.connect.plugins.PluginPropertyWriteOutcome;
+import com.mirth.connect.plugins.PluginPropertyWriteResult;
+import com.mirth.connect.plugins.PropertyWriteContext;
+import com.mirth.connect.plugins.PropertyWriteOrigin;
 import com.mirth.connect.util.ConfigurationProperty;
 
 public class ServerConfigurationRestorer {
@@ -52,6 +58,7 @@ public class ServerConfigurationRestorer {
     private ScriptController scriptController;
     private ExtensionController extensionController;
     private ContextFactoryController contextFactoryController;
+    private Integer authenticatedUserId;
 
     public ServerConfigurationRestorer(ConfigurationController configurationController, ChannelController channelController, AlertController alertController, CodeTemplateController codeTemplateController, EngineController engineController, ScriptController scriptController, ExtensionController extensionController, ContextFactoryController contextFactoryController) {
         this.configurationController = configurationController;
@@ -65,6 +72,12 @@ public class ServerConfigurationRestorer {
     }
 
     public void restoreServerConfiguration(ServerConfiguration serverConfiguration, boolean deploy, boolean overwriteConfigMap) throws ControllerException {
+        restoreServerConfiguration(serverConfiguration, deploy, overwriteConfigMap, null);
+    }
+
+    public void restoreServerConfiguration(ServerConfiguration serverConfiguration, boolean deploy,
+            boolean overwriteConfigMap, Integer authenticatedUserId) throws ControllerException {
+        this.authenticatedUserId = authenticatedUserId;
         MultiException multiException = new MultiException();
 
         /*
@@ -432,10 +445,7 @@ public class ServerConfigurationRestorer {
 
     void restorePluginProperties(ServerConfiguration serverConfiguration, MultiException multiException) {
         try {
-            /*
-             * Set the properties for all plugins in the server configuration, whether or not the
-             * plugin is actually installed on this server.
-             */
+            // Unknown/uninstalled groups are rejected by the extension namespace gate.
             if (serverConfiguration.getPluginProperties() != null) {
                 MultiException subMultiException = new MultiException();
 
@@ -453,13 +463,28 @@ public class ServerConfigurationRestorer {
 
     void restorePluginProperties(String pluginName, Properties properties, MultiException multiException) {
         try {
-            // Allow the plugin to modify the properties first if it needs to
+            PluginMetaData metadata = extensionController.getPluginMetaData().get(pluginName);
+            boolean protectedProperties = metadata != null
+                    && metadata.getPropertyWriteProtection() == PropertyWriteProtection.PREPARED_ONLY;
+
+            // Protected groups have one transformation authority: their preparer.
             ServicePlugin servicePlugin = extensionController.getServicePlugins().get(pluginName);
-            if (servicePlugin instanceof MergePropertiesInterface) {
+            if (!protectedProperties && servicePlugin instanceof MergePropertiesInterface) {
                 ((MergePropertiesInterface) servicePlugin).modifyPropertiesOnRestore(properties);
             }
 
-            extensionController.setPluginProperties(pluginName, properties);
+            PluginPropertyWriteResult result = extensionController.setPluginProperties(pluginName,
+                    properties, false, new PropertyWriteContext(PropertyWriteOrigin.RESTORE,
+                            com.mirth.connect.plugins.PropertyWritePurpose.NORMAL,
+                            authenticatedUserId));
+            if (result.getOutcome() != PluginPropertyWriteOutcome.COMMITTED
+                    && result.getOutcome() != PluginPropertyWriteOutcome.NO_CHANGE
+                    && result.getOutcome() != PluginPropertyWriteOutcome.LEGACY_APPLIED) {
+                throw new ControllerException("plugin_restore_"
+                        + result.getOutcome().name().toLowerCase());
+            }
+            extensionController.updatePluginProperties(pluginName,
+                    result.getAppliedProperties());
         } catch (Throwable t) {
             multiException.add(new ControllerException("Error restoring properties for plugin: " + pluginName, t));
         }

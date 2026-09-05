@@ -24,6 +24,8 @@ import com.thoughtworks.xstream.annotations.XStreamAsAttribute;
 
 @XStreamAlias("pluginMetaData")
 public class PluginMetaData extends MetaData implements Serializable, Purgable {
+    private PropertyWriteProtection propertyWriteProtection = PropertyWriteProtection.COMPATIBILITY;
+
     @XStreamAlias("serverClasses")
     private List<PluginClass> serverClasses;
 
@@ -41,6 +43,15 @@ public class PluginMetaData extends MetaData implements Serializable, Purgable {
 
     public List<PluginClass> getServerClasses() {
         return serverClasses;
+    }
+
+    public PropertyWriteProtection getPropertyWriteProtection() {
+        return propertyWriteProtection == null ? PropertyWriteProtection.COMPATIBILITY : propertyWriteProtection;
+    }
+
+    public void setPropertyWriteProtection(PropertyWriteProtection propertyWriteProtection) {
+        this.propertyWriteProtection = propertyWriteProtection == null
+                ? PropertyWriteProtection.COMPATIBILITY : propertyWriteProtection;
     }
 
     public void setServerClasses(List<PluginClass> serverClasses) {

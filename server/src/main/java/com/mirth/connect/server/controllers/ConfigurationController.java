@@ -32,6 +32,7 @@ import com.mirth.connect.model.PublicServerSettings;
 import com.mirth.connect.model.ServerConfiguration;
 import com.mirth.connect.model.ServerSettings;
 import com.mirth.connect.model.UpdateSettings;
+import com.mirth.connect.plugins.ExpectedPropertyValue;
 import com.mirth.connect.util.ConfigurationProperty;
 import com.mirth.connect.util.ConnectionTestResponse;
 
@@ -288,6 +289,12 @@ public abstract class ConfigurationController extends Controller {
      */
     public abstract void setServerConfiguration(ServerConfiguration serverConfiguration, boolean deploy, boolean overwriteConfigMap) throws ControllerException;
 
+    /** Origin-aware restore entry point used by authenticated HTTP callers. */
+    public void setServerConfiguration(ServerConfiguration serverConfiguration, boolean deploy,
+            boolean overwriteConfigMap, Integer authenticatedUserId) throws ControllerException {
+        setServerConfiguration(serverConfiguration, deploy, overwriteConfigMap);
+    }
+
     /**
      * Returns the password requirements specified in the mirth.properties file (ex. min length).
      * 
@@ -340,6 +347,38 @@ public abstract class ConfigurationController extends Controller {
     public abstract String getProperty(String group, String name);
 
     public abstract void saveProperty(String group, String name, String property);
+
+    /**
+     * Reads one property without translating a database failure into absence.
+     * Older third-party controller implementations fail closed until they add
+     * the checked capability.
+     */
+    public CheckedPropertyValue readPropertyChecked(String group, String name)
+            throws ControllerException {
+        throw new ControllerException("checked_property_read_unsupported");
+    }
+
+    public CheckedPropertyValue readPropertyChecked(String group, String name,
+            CheckedReadControl control) throws ControllerException {
+        throw new ControllerException("controlled_checked_property_read_unsupported");
+    }
+
+    /** Reads an entire property group without catch-and-empty behavior. */
+    public Map<String, String> readPropertiesForGroupChecked(String group)
+            throws ControllerException {
+        throw new ControllerException("checked_property_group_read_unsupported");
+    }
+
+    public Map<String, String> readPropertiesForGroupChecked(String group,
+            CheckedReadControl control) throws ControllerException {
+        throw new ControllerException("controlled_checked_property_group_read_unsupported");
+    }
+
+    /** Performs one exact checked write in a dedicated transaction. */
+    public AtomicPropertyWriteOutcome compareAndSetPropertyAtomically(String group, String name,
+            ExpectedPropertyValue expected, String newValue) throws ControllerException {
+        throw new ControllerException("atomic_property_write_unsupported");
+    }
 
     public abstract void removeProperty(String group, String name);
 

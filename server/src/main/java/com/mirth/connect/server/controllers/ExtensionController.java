@@ -20,11 +20,15 @@ import com.mirth.connect.client.core.ControllerException;
 import com.mirth.connect.model.ConnectorMetaData;
 import com.mirth.connect.model.MetaData;
 import com.mirth.connect.model.PluginMetaData;
+import com.mirth.connect.model.PropertyWriteProtection;
 import com.mirth.connect.plugins.AuthorizationPlugin;
 import com.mirth.connect.plugins.ChannelPlugin;
 import com.mirth.connect.plugins.CodeTemplateServerPlugin;
 import com.mirth.connect.plugins.DataTypeServerPlugin;
 import com.mirth.connect.plugins.MultiFactorAuthenticationPlugin;
+import com.mirth.connect.plugins.PluginPropertyWriteOutcome;
+import com.mirth.connect.plugins.PluginPropertyWriteResult;
+import com.mirth.connect.plugins.PropertyWriteContext;
 import com.mirth.connect.plugins.ResourcePlugin;
 import com.mirth.connect.plugins.ServerPlugin;
 import com.mirth.connect.plugins.ServicePlugin;
@@ -138,6 +142,26 @@ public abstract class ExtensionController extends Controller {
      * @throws ControllerException
      */
     public abstract void setPluginProperties(String name, Properties properties, boolean mergeProperties) throws ControllerException;
+
+    /**
+     * Origin-aware write entry point. The concrete base implementation preserves
+     * binary linkage for third-party controllers; protected namespaces are
+     * prevented from reaching it by engine metadata.
+     */
+    public PluginPropertyWriteResult setPluginProperties(String name, Properties properties,
+            boolean mergeProperties, PropertyWriteContext context) throws ControllerException {
+        PluginMetaData metadata = getPluginMetaData().get(name);
+        if (metadata == null) {
+            throw new ControllerException("unknown_plugin_property_namespace");
+        }
+        if (metadata.getPropertyWriteProtection() == PropertyWriteProtection.PREPARED_ONLY) {
+            return PluginPropertyWriteResult.withoutProperties(
+                    PluginPropertyWriteOutcome.PREPARER_UNAVAILABLE);
+        }
+        setPluginProperties(name, properties, mergeProperties);
+        return PluginPropertyWriteResult.withProperties(
+                PluginPropertyWriteOutcome.LEGACY_APPLIED, properties);
+    }
 
     /**
      * Returns properties for the specified plugin from the database.

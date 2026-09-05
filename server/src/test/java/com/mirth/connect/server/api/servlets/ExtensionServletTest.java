@@ -14,9 +14,13 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.clearInvocations;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
@@ -50,6 +54,11 @@ import com.mirth.connect.model.ServerConfiguration;
 import com.mirth.connect.model.ServerEvent;
 import com.mirth.connect.model.ServerEvent.Outcome;
 import com.mirth.connect.model.ServerSettings;
+import com.mirth.connect.plugins.PluginPropertyWriteOutcome;
+import com.mirth.connect.plugins.PluginPropertyWriteResult;
+import com.mirth.connect.plugins.PluginPropertyRejectedException;
+import com.mirth.connect.plugins.PropertyWriteContext;
+import com.mirth.connect.plugins.PropertyWriteOrigin;
 import com.mirth.connect.server.api.providers.MirthResourceInvocationHandlerProvider;
 import com.mirth.connect.server.controllers.AuthorizationController;
 import com.mirth.connect.server.controllers.ChannelAuthorizer;
@@ -85,6 +94,11 @@ public class ExtensionServletTest {
         when(controllerFactory.createEventController()).thenReturn(eventController);
         when(controllerFactory.createExtensionController()).thenReturn(extensionController);
         when(controllerFactory.createUserController()).thenReturn(userController);
+        when(extensionController.setPluginProperties(anyString(), any(Properties.class),
+                anyBoolean(), any(PropertyWriteContext.class))).thenAnswer(invocation ->
+                        PluginPropertyWriteResult.withProperties(
+                                PluginPropertyWriteOutcome.LEGACY_APPLIED,
+                                invocation.getArgument(1)));
 
         TestAuthorizationController authorizationController = new TestAuthorizationController(controllerFactory);
         when(controllerFactory.createAuthorizationController()).thenReturn(authorizationController);
@@ -107,7 +121,12 @@ public class ExtensionServletTest {
         authorizationController.setAuthorized(true);
         invocationHandler.invoke(new ExtensionServlet(request, securityContext, controllerFactory), method, new Object[] {
                 EXTENSION_NAME, submitted, false });
-        verify(extensionController).setPluginProperties(EXTENSION_NAME, submitted, false);
+        ArgumentCaptor<PropertyWriteContext> writeContext =
+                ArgumentCaptor.forClass(PropertyWriteContext.class);
+        verify(extensionController).setPluginProperties(eq(EXTENSION_NAME), eq(submitted),
+                eq(false), writeContext.capture());
+        assertEquals(PropertyWriteOrigin.GENERIC_API, writeContext.getValue().getOrigin());
+        assertEquals(Integer.valueOf(1), writeContext.getValue().getAuthenticatedUserId());
         verify(extensionController).updatePluginProperties(EXTENSION_NAME, submitted);
 
         clearInvocations(extensionController);
@@ -147,6 +166,70 @@ public class ExtensionServletTest {
             assertFalse(persistedEvent.getAttributes().toString().contains(SECRET_KEY));
             assertFalse(persistedEvent.getAttributes().toString().contains(SECRET_VALUE));
         }
+    }
+
+    @Test
+    public void typedPreMutationRejectionsMapToConflictOrBadRequest() throws Throwable {
+        ControllerFactory controllerFactory = mock(ControllerFactory.class);
+        ConfigurationController configurationController = mock(ConfigurationController.class);
+        ChannelController channelController = mock(ChannelController.class);
+        EventController eventController = mock(EventController.class);
+        ExtensionController extensionController = mock(ExtensionController.class);
+        UserController userController = mock(UserController.class);
+        when(configurationController.getServerId()).thenReturn("test-server");
+        when(controllerFactory.createConfigurationController()).thenReturn(configurationController);
+        when(controllerFactory.createChannelController()).thenReturn(channelController);
+        when(controllerFactory.createEventController()).thenReturn(eventController);
+        when(controllerFactory.createExtensionController()).thenReturn(extensionController);
+        when(controllerFactory.createUserController()).thenReturn(userController);
+        TestAuthorizationController authorizationController =
+                new TestAuthorizationController(controllerFactory);
+        authorizationController.setAuthorized(true);
+        when(controllerFactory.createAuthorizationController()).thenReturn(authorizationController);
+
+        HttpSession session = mock(HttpSession.class);
+        when(session.getAttribute("user")).thenReturn("1");
+        when(session.getAttribute("authorized")).thenReturn(Boolean.TRUE);
+        HttpServletRequest request = mock(HttpServletRequest.class);
+        when(request.getSession()).thenReturn(session);
+        ExtensionServlet servlet = new ExtensionServlet(request, mock(SecurityContext.class),
+                controllerFactory);
+        Method method = ExtensionServletInterface.class.getMethod("setPluginProperties",
+                String.class, Properties.class, boolean.class);
+        InvocationHandler invocationHandler = new MirthResourceInvocationHandlerProvider().create(null);
+
+        when(extensionController.setPluginProperties(eq(EXTENSION_NAME), any(Properties.class),
+                eq(false), any(PropertyWriteContext.class)))
+                        .thenThrow(new PluginPropertyRejectedException(
+                                "revision_conflict", "revision", "conflict", true))
+                        .thenThrow(new PluginPropertyRejectedException(
+                                "invalid_value", "enabled", "validation", false));
+
+        MirthApiException conflict;
+        try {
+            invocationHandler.invoke(servlet, method,
+                    new Object[] { EXTENSION_NAME, new Properties(), false });
+            throw new AssertionError("Expected conflict");
+        } catch (InvocationTargetException failure) {
+            assertTrue(failure.getCause() instanceof MirthApiException);
+            conflict = (MirthApiException) failure.getCause();
+        }
+        assertEquals(javax.ws.rs.core.Response.Status.CONFLICT.getStatusCode(),
+                conflict.getResponse().getStatus());
+        MirthApiException invalid;
+        try {
+            invocationHandler.invoke(servlet, method,
+                    new Object[] { EXTENSION_NAME, new Properties(), false });
+            throw new AssertionError("Expected bad request");
+        } catch (InvocationTargetException failure) {
+            assertTrue(failure.getCause() instanceof MirthApiException);
+            invalid = (MirthApiException) failure.getCause();
+        }
+        assertEquals(javax.ws.rs.core.Response.Status.BAD_REQUEST.getStatusCode(),
+                invalid.getResponse().getStatus());
+        verify(extensionController, times(2)).setPluginProperties(eq(EXTENSION_NAME),
+                any(Properties.class), eq(false), any(PropertyWriteContext.class));
+        verify(extensionController, never()).updatePluginProperties(anyString(), any());
     }
 
     @Test
@@ -192,7 +275,7 @@ public class ExtensionServletTest {
 
         authorizationController.setAuthorized(true);
         invocationHandler.invoke(servlet, actualMethod, new Object[] { submitted, true, false });
-        verify(configurationController).setServerConfiguration(submitted, true, false);
+        verify(configurationController).setServerConfiguration(submitted, true, false, 1);
 
         clearInvocations(configurationController);
         authorizationController.setAuthorized(false);

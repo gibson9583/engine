@@ -17,6 +17,7 @@ import java.util.Set;
 import javax.servlet.http.HttpServletRequest;
 import javax.ws.rs.WebApplicationException;
 import javax.ws.rs.core.Context;
+import javax.ws.rs.core.Response;
 import javax.ws.rs.core.Response.Status;
 import javax.ws.rs.core.SecurityContext;
 
@@ -27,6 +28,11 @@ import com.mirth.connect.model.ConnectorMetaData;
 import com.mirth.connect.model.MetaData;
 import com.mirth.connect.model.PluginMetaData;
 import com.mirth.connect.model.ServerEvent.Outcome;
+import com.mirth.connect.plugins.PluginPropertyWriteOutcome;
+import com.mirth.connect.plugins.PluginPropertyWriteResult;
+import com.mirth.connect.plugins.PluginPropertyRejectedException;
+import com.mirth.connect.plugins.PropertyWriteContext;
+import com.mirth.connect.plugins.PropertyWriteOrigin;
 import com.mirth.connect.server.api.DontCheckAuthorized;
 import com.mirth.connect.server.api.MirthServlet;
 import com.mirth.connect.server.controllers.ControllerFactory;
@@ -140,8 +146,22 @@ public class ExtensionServlet extends MirthServlet implements ExtensionServletIn
         parameterMap.put("mergeProperties", mergeProperties);
         checkUserAuthorizedForExtension(extensionName);
         try {
-            extensionController.setPluginProperties(extensionName, properties, mergeProperties);
-            extensionController.updatePluginProperties(extensionName, properties);
+            PluginPropertyWriteResult result = extensionController.setPluginProperties(extensionName,
+                    properties, mergeProperties,
+                    PropertyWriteContext.normal(PropertyWriteOrigin.GENERIC_API, getCurrentUserId()));
+            if (result.getOutcome() == PluginPropertyWriteOutcome.COMMITTED
+                    || result.getOutcome() == PluginPropertyWriteOutcome.NO_CHANGE
+                    || result.getOutcome() == PluginPropertyWriteOutcome.LEGACY_APPLIED) {
+                extensionController.updatePluginProperties(extensionName,
+                        result.getAppliedProperties());
+            } else {
+                Status status = result.getOutcome() == PluginPropertyWriteOutcome.CONFLICT
+                        ? Status.CONFLICT : Status.SERVICE_UNAVAILABLE;
+                throw new MirthApiException(Response.status(status).build());
+            }
+        } catch (PluginPropertyRejectedException rejected) {
+            Status status = rejected.isConflict() ? Status.CONFLICT : Status.BAD_REQUEST;
+            throw new MirthApiException(Response.status(status).build());
         } catch (ControllerException e) {
             throw new MirthApiException(e);
         }

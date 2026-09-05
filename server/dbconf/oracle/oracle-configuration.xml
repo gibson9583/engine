@@ -23,6 +23,12 @@
 		WHERE CATEGORY = #{category} AND NAME = #{name}
 	</select>
 
+	<select id="selectPropertyForUpdate" parameterType="java.util.Map" resultType="KeyValuePair">
+		SELECT NAME AS "key", VALUE AS "value" FROM CONFIGURATION
+		WHERE CATEGORY = #{category} AND NAME = #{name}
+		FOR UPDATE
+	</select>
+
 	<insert id="insertProperty" parameterType="java.util.Map">
 		INSERT INTO CONFIGURATION (CATEGORY, NAME, VALUE)
 		VALUES (#{category}, #{name}, #{value})

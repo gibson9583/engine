@@ -41,6 +41,7 @@ import org.apache.commons.io.IOUtils;
 import org.eclipse.jetty.util.MultiException;
 import org.junit.BeforeClass;
 import org.junit.Test;
+import org.mockito.ArgumentCaptor;
 import org.mockito.ArgumentMatcher;
 import org.mockito.invocation.InvocationOnMock;
 import org.mockito.stubbing.Answer;
@@ -53,6 +54,8 @@ import com.mirth.connect.model.ChannelGroup;
 import com.mirth.connect.model.ChannelTag;
 import com.mirth.connect.model.ExtensionPermission;
 import com.mirth.connect.model.LibraryProperties;
+import com.mirth.connect.model.PluginMetaData;
+import com.mirth.connect.model.PropertyWriteProtection;
 import com.mirth.connect.model.ResourceProperties;
 import com.mirth.connect.model.ResourcePropertiesList;
 import com.mirth.connect.model.ServerConfiguration;
@@ -64,6 +67,10 @@ import com.mirth.connect.model.codetemplates.CodeTemplate;
 import com.mirth.connect.model.codetemplates.CodeTemplateLibrary;
 import com.mirth.connect.model.converters.ObjectXMLSerializer;
 import com.mirth.connect.plugins.MergePropertiesInterface;
+import com.mirth.connect.plugins.PluginPropertyWriteOutcome;
+import com.mirth.connect.plugins.PluginPropertyWriteResult;
+import com.mirth.connect.plugins.PropertyWriteContext;
+import com.mirth.connect.plugins.PropertyWriteOrigin;
 import com.mirth.connect.plugins.ServicePlugin;
 import com.mirth.connect.util.ConfigurationProperty;
 
@@ -732,28 +739,70 @@ public class ServerConfigurationRestorerTest {
         MultiException multiException = new MultiException();
 
         restorer.restorePluginProperties(pluginName, properties, multiException);
-        verify(restorer.getExtensionController(), times(1)).setPluginProperties(pluginName, properties);
+        verify(restorer.getExtensionController(), times(1)).setPluginProperties(eq(pluginName),
+                eq(properties), eq(false), any(PropertyWriteContext.class));
 
         ServicePlugin servicePlugin = mock(ServicePlugin.class);
         Map<String, ServicePlugin> servicePlugins = new HashMap<String, ServicePlugin>();
         servicePlugins.put(pluginName, servicePlugin);
         when(restorer.getExtensionController().getServicePlugins()).thenReturn(servicePlugins);
         reset(restorer.getExtensionController());
+        stubExtensionController(restorer.getExtensionController());
         restorer.restorePluginProperties(pluginName, properties, multiException);
-        verify(restorer.getExtensionController(), times(1)).setPluginProperties(pluginName, properties);
+        verify(restorer.getExtensionController(), times(1)).setPluginProperties(eq(pluginName),
+                eq(properties), eq(false), any(PropertyWriteContext.class));
 
         TestServicePlugin testServicePlugin = mock(TestServicePlugin.class);
         servicePlugins.put(pluginName, testServicePlugin);
         reset(restorer.getExtensionController());
+        stubExtensionController(restorer.getExtensionController());
         when(restorer.getExtensionController().getServicePlugins()).thenReturn(servicePlugins);
         restorer.restorePluginProperties(pluginName, properties, multiException);
-        verify(restorer.getExtensionController(), times(1)).setPluginProperties(pluginName, properties);
+        verify(restorer.getExtensionController(), times(1)).setPluginProperties(eq(pluginName),
+                eq(properties), eq(false), any(PropertyWriteContext.class));
         verify(testServicePlugin, times(1)).modifyPropertiesOnRestore(properties);
 
         ExtensionController extensionController = restorer.getExtensionController();
-        doThrow(ControllerException.class).when(extensionController).setPluginProperties(anyString(), any());
+        doThrow(ControllerException.class).when(extensionController).setPluginProperties(
+                anyString(), any(), eq(false), any(PropertyWriteContext.class));
         restorer.restorePluginProperties(pluginName, properties, multiException);
         assertEquals(1, multiException.size());
+    }
+
+    @Test
+    public void protectedRestoreSkipsLegacyMergeAndUsesOnlyCanonicalSuccessProperties()
+            throws Exception {
+        ServerConfigurationRestorer restorer = createRestorer();
+        String pluginName = "protected";
+        Properties submitted = new Properties();
+        submitted.setProperty("policy.v1", "submitted");
+        Properties canonical = new Properties();
+        canonical.setProperty("policy.v1", "canonical");
+        PluginMetaData metadata = new PluginMetaData();
+        metadata.setName(pluginName);
+        metadata.setPropertyWriteProtection(PropertyWriteProtection.PREPARED_ONLY);
+        when(restorer.getExtensionController().getPluginMetaData())
+                .thenReturn(Map.of(pluginName, metadata));
+        TestServicePlugin legacyMerge = mock(TestServicePlugin.class);
+        when(restorer.getExtensionController().getServicePlugins())
+                .thenReturn(Map.of(pluginName, legacyMerge));
+        when(restorer.getExtensionController().setPluginProperties(eq(pluginName),
+                eq(submitted), eq(false), any(PropertyWriteContext.class)))
+                        .thenReturn(PluginPropertyWriteResult.withProperties(
+                                PluginPropertyWriteOutcome.NO_CHANGE, canonical));
+
+        MultiException failures = new MultiException();
+        restorer.restorePluginProperties(pluginName, submitted, failures);
+
+        assertEquals(0, failures.size());
+        verify(legacyMerge, times(0)).modifyPropertiesOnRestore(any());
+        verify(restorer.getExtensionController()).updatePluginProperties(pluginName, canonical);
+        ArgumentCaptor<PropertyWriteContext> context =
+                ArgumentCaptor.forClass(PropertyWriteContext.class);
+        verify(restorer.getExtensionController()).setPluginProperties(eq(pluginName),
+                eq(submitted), eq(false), context.capture());
+        assertEquals(PropertyWriteOrigin.RESTORE, context.getValue().getOrigin());
+        assertNull(context.getValue().getAuthenticatedUserId());
     }
 
     @Test
@@ -876,9 +925,24 @@ public class ServerConfigurationRestorerTest {
         EngineController engineController = mock(EngineController.class);
         ScriptController scriptController = mock(ScriptController.class);
         ExtensionController extensionController = mock(ExtensionController.class);
+        stubExtensionController(extensionController);
         ContextFactoryController contextFactoryController = mock(ContextFactoryController.class);
 
         return spy(new ServerConfigurationRestorer(configurationController, channelController, alertController, codeTemplateController, engineController, scriptController, extensionController, contextFactoryController));
+    }
+
+    private void stubExtensionController(ExtensionController extensionController) {
+        when(extensionController.getPluginMetaData()).thenReturn(new HashMap<>());
+        when(extensionController.getServicePlugins()).thenReturn(new HashMap<>());
+        try {
+            when(extensionController.setPluginProperties(anyString(), any(Properties.class),
+                    eq(false), any(PropertyWriteContext.class))).thenAnswer(invocation ->
+                            PluginPropertyWriteResult.withProperties(
+                                    PluginPropertyWriteOutcome.LEGACY_APPLIED,
+                                    invocation.getArgument(1)));
+        } catch (ControllerException e) {
+            throw new AssertionError(e);
+        }
     }
 
     private class TestServicePlugin implements ServicePlugin, MergePropertiesInterface {
