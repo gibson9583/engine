@@ -11,6 +11,8 @@ package com.mirth.connect.donkey.server.queue;
 
 import java.util.Collections;
 import java.util.Iterator;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map.Entry;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -19,6 +21,8 @@ import java.util.concurrent.TimeUnit;
 import com.mirth.connect.donkey.model.event.MessageEventType;
 import com.mirth.connect.donkey.model.message.ConnectorMessage;
 import com.mirth.connect.donkey.server.event.MessageEvent;
+import com.mirth.connect.donkey.server.channel.lifecycle.HandoffCancellationBatch;
+import com.mirth.connect.donkey.server.channel.lifecycle.HandoffCancellationReason;
 
 public class SourceQueue extends ConnectorMessageQueue {
 
@@ -39,52 +43,77 @@ public class SourceQueue extends ConnectorMessageQueue {
         return null;
     }
 
-    public synchronized ConnectorMessage poll() {
-        if (size == null) {
-            updateSize();
-        }
-
+    public ConnectorMessage poll() {
         ConnectorMessage connectorMessage = null;
+        boolean acquired = false;
+        List<HandoffCancellationBatch> cancellations = new ArrayList<HandoffCancellationBatch>();
+        try {
+            synchronized (this) {
+                if (size == null) {
+                    updateSize();
+                }
 
-        if (size > 0) {
-            connectorMessage = pollFirstValue();
+                if (size > 0) {
+                    connectorMessage = pollFirstValue();
 
-            // if no element was received and there are elements in the database,
-            // fill the buffer from the database and get the next element in the queue
-            if (connectorMessage == null) {
-                fillBuffer();
-                connectorMessage = pollFirstValue();
+                    // If the database has items but the buffer is empty, refill and retry.
+                    if (connectorMessage == null) {
+                        cancellations.addAll(fillBufferLocked(
+                                HandoffCancellationReason.REFILL_DISCARDED));
+                        connectorMessage = pollFirstValue();
+                    }
+
+                    /*
+                     * Ensure the same message is not polled concurrently. The caller must later
+                     * call finish to remove the message ID from the checked-out set.
+                     */
+                    while (connectorMessage != null
+                            && checkedOut.contains(connectorMessage.getMessageId())) {
+                        claimHandoffLocked(connectorMessage.takeLifecycleHandoffBundle(),
+                                HandoffCancellationReason.REFILL_DISCARDED, cancellations);
+                        connectorMessage = pollFirstValue();
+                    }
+                }
+
+                if (connectorMessage != null) {
+                    decrementActualSize();
+                    checkedOut.add(connectorMessage.getMessageId());
+                    eventDispatcher.dispatchEvent(new MessageEvent(channelId, metaDataId,
+                            MessageEventType.QUEUED, (long) size(), true));
+                }
+                acquired = true;
             }
-
-            /*
-             * We use a while loop here to ensure that no message gets polled at the same time from
-             * multiple queue threads. After calling poll() and acquiring a connector message, the
-             * caller is expected to call finish to remove the message ID from the checked out set.
-             */
-            while (connectorMessage != null && checkedOut.contains(connectorMessage.getMessageId())) {
-                connectorMessage = pollFirstValue();
+        } finally {
+            if (!acquired && connectorMessage != null) {
+                synchronized (this) {
+                    checkedOut.remove(connectorMessage.getMessageId());
+                    claimHandoffLocked(connectorMessage.takeLifecycleHandoffBundle(),
+                            HandoffCancellationReason.TRANSFER_FAILED, cancellations);
+                }
             }
+            deliverHandoffCancellations(cancellations);
         }
-
-        // if an element was found, decrement the overall count
-        if (connectorMessage != null) {
-            decrementActualSize();
-            checkedOut.add(connectorMessage.getMessageId());
-            eventDispatcher.dispatchEvent(new MessageEvent(channelId, metaDataId, MessageEventType.QUEUED, (long) size(), true));
-        }
-
         return connectorMessage;
     }
 
-    public synchronized void finish(ConnectorMessage connectorMessage) {
-        if (connectorMessage != null) {
-            Long messageId = connectorMessage.getMessageId();
+    public void finish(ConnectorMessage connectorMessage) {
+        List<HandoffCancellationBatch> cancellations = new ArrayList<HandoffCancellationBatch>();
+        try {
+            synchronized (this) {
+                if (connectorMessage != null) {
+                    Long messageId = connectorMessage.getMessageId();
 
-            if (buffer.containsKey(messageId)) {
-                buffer.remove(messageId);
+                    ConnectorMessage removed = buffer.remove(messageId);
+                    if (removed != null) {
+                        claimHandoffLocked(removed.takeLifecycleHandoffBundle(),
+                                HandoffCancellationReason.REMOVED, cancellations);
+                    }
+
+                    checkedOut.remove(messageId);
+                }
             }
-
-            checkedOut.remove(messageId);
+        } finally {
+            deliverHandoffCancellations(cancellations);
         }
     }
 

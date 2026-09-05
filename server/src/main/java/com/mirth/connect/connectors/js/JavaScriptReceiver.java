@@ -199,6 +199,12 @@ public class JavaScriptReceiver extends PollConnector {
             eventController.dispatchEvent(new ErrorEvent(getChannelId(), getMetaDataId(), null, ErrorEventType.SOURCE_CONNECTOR, getSourceName(), connectorProperties.getName(), "Error processing batch message", e));
             logger.error(e.getMessage(), e);
         } catch (Throwable t) {
+            if (t instanceof VirtualMachineError) {
+                throw (VirtualMachineError) t;
+            }
+            if (t instanceof ThreadDeath) {
+                throw (ThreadDeath) t;
+            }
             eventController.dispatchEvent(new ErrorEvent(getChannelId(), getMetaDataId(), null, ErrorEventType.SOURCE_CONNECTOR, getSourceName(), connectorProperties.getName(), null, t));
             logger.error("Error polling in channel: " + getChannelId(), t);
         } finally {

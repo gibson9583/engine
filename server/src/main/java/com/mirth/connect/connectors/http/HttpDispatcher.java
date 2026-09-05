@@ -415,12 +415,12 @@ public class HttpDispatcher extends DestinationConnector {
             if (statusCode < HttpStatus.SC_BAD_REQUEST) {
                 responseStatus = Status.SENT;
             } else {
-                eventController.dispatchEvent(new ErrorEvent(getChannelId(), getMetaDataId(), connectorMessage.getMessageId(), ErrorEventType.DESTINATION_CONNECTOR, getDestinationName(), connectorProperties.getName(), "Received error response from HTTP server.", null));
+                eventController.dispatchEvent(new ErrorEvent(getChannelId(), getMetaDataId(), connectorMessage.getMessageId(), ErrorEventType.DESTINATION_CONNECTOR, getDestinationName(), connectorProperties.getName(), "Received error response from HTTP server.", null, connectorMessage.getMessageIncarnationId()));
                 responseStatusMessage = ErrorMessageBuilder.buildErrorResponse("Received error response from HTTP server.", null);
                 responseError = ErrorMessageBuilder.buildErrorMessage(connectorProperties.getName(), responseData, null);
             }
         } catch (Throwable t) {
-            eventController.dispatchEvent(new ErrorEvent(getChannelId(), getMetaDataId(), connectorMessage.getMessageId(), ErrorEventType.DESTINATION_CONNECTOR, getDestinationName(), connectorProperties.getName(), "Error connecting to HTTP server.", t));
+            eventController.dispatchEvent(new ErrorEvent(getChannelId(), getMetaDataId(), connectorMessage.getMessageId(), ErrorEventType.DESTINATION_CONNECTOR, getDestinationName(), connectorProperties.getName(), "Error connecting to HTTP server.", t, connectorMessage.getMessageIncarnationId()));
             responseStatusMessage = ErrorMessageBuilder.buildErrorResponse("Error connecting to HTTP server", t);
             responseError = ErrorMessageBuilder.buildErrorMessage(connectorProperties.getName(), "Error connecting to HTTP server", t);
 

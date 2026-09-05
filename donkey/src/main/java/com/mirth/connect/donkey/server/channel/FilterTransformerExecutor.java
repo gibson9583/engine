@@ -16,6 +16,9 @@ import com.mirth.connect.donkey.model.message.MessageContent;
 import com.mirth.connect.donkey.model.message.SerializationType;
 import com.mirth.connect.donkey.model.message.Status;
 import com.mirth.connect.donkey.server.channel.components.FilterTransformer;
+import com.mirth.connect.donkey.server.channel.lifecycle.FailureCategory;
+import com.mirth.connect.donkey.server.channel.lifecycle.LifecycleHandle;
+import com.mirth.connect.donkey.server.channel.lifecycle.MessageInfo;
 import com.mirth.connect.donkey.server.message.DataType;
 import com.mirth.connect.donkey.util.ThreadUtils;
 
@@ -63,6 +66,34 @@ public class FilterTransformerExecutor {
      * @throws InterruptedException
      */
     public void processConnectorMessage(ConnectorMessage connectorMessage) throws InterruptedException, DonkeyException {
+        if (!MessageLifecycleSupport.isEnabled(connectorMessage)) {
+            processConnectorMessageInternal(connectorMessage);
+            return;
+        }
+
+        MessageInfo messageInfo = MessageLifecycleSupport.snapshot(connectorMessage);
+        if (messageInfo == null) {
+            processConnectorMessageInternal(connectorMessage);
+            return;
+        }
+
+        LifecycleHandle lifecycleHandle = MessageLifecycleSupport.listeners()
+                .onFilterTransformerStart(connectorMessage.getLifecycleDispatchToken(),
+                        messageInfo);
+        Throwable lifecycleFailure = null;
+        try {
+            processConnectorMessageInternal(connectorMessage);
+        } catch (Throwable t) {
+            lifecycleFailure = t;
+            throw t;
+        } finally {
+            lifecycleHandle.end(MessageLifecycleSupport.result(connectorMessage,
+                    lifecycleFailure, false, null, MessageLifecycleSupport.failureCategory(
+                            lifecycleFailure, FailureCategory.TRANSFORMER)));
+        }
+    }
+
+    private void processConnectorMessageInternal(ConnectorMessage connectorMessage) throws InterruptedException, DonkeyException {
         ThreadUtils.checkInterruptedStatus();
         String content;
         String encodedContent;

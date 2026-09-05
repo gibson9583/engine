@@ -281,7 +281,7 @@ public class DICOMDispatcher extends DestinationConnector {
         } catch (Exception e) {
             responseStatusMessage = ErrorMessageBuilder.buildErrorResponse(e.getMessage(), e);
             responseError = ErrorMessageBuilder.buildErrorMessage(connectorProperties.getName(), e.getMessage(), null);
-            eventController.dispatchEvent(new ErrorEvent(getChannelId(), getMetaDataId(), connectorMessage.getMessageId(), ErrorEventType.DESTINATION_CONNECTOR, getDestinationName(), connectorProperties.getName(), e.getMessage(), null));
+            eventController.dispatchEvent(new ErrorEvent(getChannelId(), getMetaDataId(), connectorMessage.getMessageId(), ErrorEventType.DESTINATION_CONNECTOR, getDestinationName(), connectorProperties.getName(), e.getMessage(), null, connectorMessage.getMessageIncarnationId()));
         } finally {
             dcmSnd.stop();
 

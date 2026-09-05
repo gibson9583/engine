@@ -24,6 +24,15 @@ import com.mirth.connect.donkey.model.message.ContentType;
 import com.mirth.connect.donkey.model.message.MessageContent;
 import com.mirth.connect.donkey.model.message.Status;
 import com.mirth.connect.donkey.server.data.DonkeyDao;
+import com.mirth.connect.donkey.server.channel.lifecycle.ChainInfo;
+import com.mirth.connect.donkey.server.channel.lifecycle.ExecutionMode;
+import com.mirth.connect.donkey.server.channel.lifecycle.FailureCategory;
+import com.mirth.connect.donkey.server.channel.lifecycle.HandoffBundle;
+import com.mirth.connect.donkey.server.channel.lifecycle.HandoffCancellationBatch;
+import com.mirth.connect.donkey.server.channel.lifecycle.HandoffCancellationReason;
+import com.mirth.connect.donkey.server.channel.lifecycle.HandoffKind;
+import com.mirth.connect.donkey.server.channel.lifecycle.LifecycleHandle;
+import com.mirth.connect.donkey.server.channel.lifecycle.MessageInfo;
 import com.mirth.connect.donkey.util.ThreadUtils;
 
 public class DestinationChain implements Callable<List<ConnectorMessage>> {
@@ -33,6 +42,10 @@ public class DestinationChain implements Callable<List<ConnectorMessage>> {
     private List<Integer> enabledMetaDataIds = new ArrayList<Integer>();
     private Logger logger = LogManager.getLogger(getClass());
     private String name;
+    private ExecutionMode lifecycleExecutionMode = ExecutionMode.SYNCHRONOUS;
+    private HandoffBundle lifecycleHandoff;
+    private ConnectorMessage lifecycleFinalMessage;
+    private boolean lifecycleRolledBack;
 
     public DestinationChain(DestinationChainProvider chainProvider) {
         this.chainProvider = chainProvider;
@@ -56,8 +69,69 @@ public class DestinationChain implements Callable<List<ConnectorMessage>> {
         this.name = name;
     }
 
+    public synchronized void setLifecycle(ExecutionMode executionMode, HandoffBundle handoff) {
+        lifecycleExecutionMode = executionMode;
+        lifecycleHandoff = handoff;
+        if (message != null) {
+            message.setLifecycleExecutionMode(executionMode);
+        }
+    }
+
+    public synchronized void cancelLifecycleHandoff(HandoffCancellationReason reason) {
+        HandoffBundle handoff = lifecycleHandoff;
+        lifecycleHandoff = null;
+        if (handoff != null) {
+            MessageLifecycleSupport.listeners().cancelHandoffs(handoff, reason);
+        }
+    }
+
+    private synchronized HandoffBundle takeLifecycleHandoff() {
+        HandoffBundle handoff = lifecycleHandoff;
+        lifecycleHandoff = null;
+        return handoff;
+    }
+
     @Override
     public List<ConnectorMessage> call() throws InterruptedException {
+        HandoffBundle handoff = takeLifecycleHandoff();
+        if (!MessageLifecycleSupport.isEnabled(message)) {
+            if (handoff != null) {
+                MessageLifecycleSupport.listeners().cancelHandoffs(handoff,
+                        HandoffCancellationReason.TRANSFER_FAILED);
+            }
+            return callWithThreadName();
+        }
+
+        MessageInfo messageInfo = MessageLifecycleSupport.snapshot(message);
+        if (messageInfo == null) {
+            if (handoff != null) {
+                MessageLifecycleSupport.listeners().cancelHandoffs(handoff,
+                        HandoffCancellationReason.TRANSFER_FAILED);
+            }
+            return callWithThreadName();
+        }
+
+        ChainInfo chainInfo = new ChainInfo(messageInfo, lifecycleExecutionMode);
+        LifecycleHandle lifecycleHandle = handoff != null
+                ? MessageLifecycleSupport.listeners().onDestinationChainStart(chainInfo, handoff)
+                : MessageLifecycleSupport.listeners().onDestinationChainStart(
+                        message.getLifecycleDispatchToken(), chainInfo);
+        Throwable lifecycleFailure = null;
+        lifecycleFinalMessage = message;
+        lifecycleRolledBack = false;
+        try {
+            return callWithThreadName();
+        } catch (Throwable t) {
+            lifecycleFailure = t;
+            throw t;
+        } finally {
+            lifecycleHandle.end(MessageLifecycleSupport.result(lifecycleFinalMessage,
+                    lifecycleFailure, lifecycleRolledBack, null,
+                    FailureCategory.DESTINATION_CONNECTOR));
+        }
+    }
+
+    private List<ConnectorMessage> callWithThreadName() throws InterruptedException {
         String originalThreadName = Thread.currentThread().getName();
         try {
             Thread.currentThread().setName(name + " < " + originalThreadName);
@@ -84,6 +158,7 @@ public class DestinationChain implements Callable<List<ConnectorMessage>> {
 
         // loop through each metaDataId in the chain, beginning with startMetaDataId
         for (int i = startMetaDataId; i < enabledMetaDataIds.size() && !stopChain; i++) {
+            lifecycleFinalMessage = message;
             ThreadUtils.checkInterruptedStatus();
             Integer metaDataId = enabledMetaDataIds.get(i);
             Integer nextMetaDataId = (enabledMetaDataIds.size() > (i + 1)) ? enabledMetaDataIds.get(i + 1) : null;
@@ -99,6 +174,7 @@ public class DestinationChain implements Callable<List<ConnectorMessage>> {
              * transaction if a response transformer is used)
              */
             DonkeyDao dao = chainProvider.getDaoFactory().getDao();
+            boolean transactionCommitted = false;
 
             try {
                 Status previousStatus = message.getStatus();
@@ -148,10 +224,13 @@ public class DestinationChain implements Callable<List<ConnectorMessage>> {
                     // if an error occurred in processing the message through the current destination, then update the message status to ERROR and continue processing through the chain
                     logger.error("Error processing destination " + chainProvider.getDestinationConnectors().get(metaDataId).getDestinationName() + " for channel " + chainProvider.getChannelId() + ".", e);
                     stopChain = true;
+                    message.setLifecycleRolledBack(true);
+                    lifecycleRolledBack = true;
                     dao.rollback();
-                    message.setStatus(Status.ERROR);
                     message.setProcessingError(e.toString());
-                    dao.updateStatus(message, previousStatus);
+                    MessageLifecycleSupport.updateStatus(dao, message, previousStatus,
+                            Status.ERROR, MessageLifecycleSupport.failure(
+                                    FailureCategory.DESTINATION_CONNECTOR, e));
                     // Insert errors if necessary
                     if (StringUtils.isNotBlank(message.getProcessingError())) {
                         dao.updateErrors(message);
@@ -166,6 +245,8 @@ public class DestinationChain implements Callable<List<ConnectorMessage>> {
                     nextMessage.setConnectorName(nextDestinationConnector.getDestinationName());
                     nextMessage.setChainId(chainProvider.getChainId());
                     nextMessage.setOrderId(nextDestinationConnector.getOrderId());
+                    MessageLifecycleSupport.copy(message, nextMessage,
+                            nextDestinationConnector);
 
                     // We don't create a new map here because the source map is read-only and thus won't ever be changed
                     nextMessage.setSourceMap(message.getSourceMap());
@@ -181,15 +262,35 @@ public class DestinationChain implements Callable<List<ConnectorMessage>> {
 
                 if (message.getStatus() != Status.QUEUED) {
                     dao.commit(chainProvider.getStorageSettings().isDurable());
+                    transactionCommitted = true;
                 } else {
+                    message.setLifecycleExecutionMode(ExecutionMode.DESTINATION_QUEUE);
+                    HandoffBundle queueHandoff = MessageLifecycleSupport.createHandoff(message,
+                            HandoffKind.DESTINATION_QUEUE);
+                    HandoffCancellationBatch[] handoffCancellations = null;
+                    boolean handoffTransferred = false;
+                    boolean offerAttempted = false;
                     // Block other threads from reading from or modifying the destination queue until both the current commit and queue addition finishes
                     // Otherwise the same message could be sent multiple times.
-                    synchronized (destinationConnector.getQueue()) {
-                        dao.commit(chainProvider.getStorageSettings().isDurable());
+                    try {
+                        synchronized (destinationConnector.getQueue()) {
+                            dao.commit(chainProvider.getStorageSettings().isDurable());
+                            transactionCommitted = true;
 
-                        if (message.getStatus() == Status.QUEUED) {
-                            destinationConnector.getQueue().add(message);
+                            if (message.getStatus() == Status.QUEUED) {
+                                offerAttempted = true;
+                                handoffCancellations = destinationConnector.getQueue()
+                                        .offerWithHandoffLocked(message, queueHandoff);
+                                handoffTransferred = true;
+                            }
                         }
+                    } finally {
+                        if (!handoffTransferred && !offerAttempted && queueHandoff != null) {
+                            MessageLifecycleSupport.listeners().cancelHandoffs(queueHandoff,
+                                    HandoffCancellationReason.ROLLED_BACK);
+                        }
+                        destinationConnector.getQueue().deliverHandoffCancellations(
+                                handoffCancellations);
                     }
                 }
 
@@ -197,6 +298,15 @@ public class DestinationChain implements Callable<List<ConnectorMessage>> {
             } catch (RuntimeException e) {
                 // An exception caught at this point either occurred when attempting to handle an exception in the above try/catch, or when attempting to create the next destination's message, the thread cannot continue running
                 logger.error("Error processing destination " + chainProvider.getDestinationConnectors().get(metaDataId).getDestinationName() + " for channel " + chainProvider.getChannelId() + ".", e);
+                if (!transactionCommitted) {
+                    message.setLifecycleRolledBack(true);
+                    lifecycleRolledBack = true;
+                    try {
+                        dao.rollback();
+                    } catch (Exception rollbackFailure) {
+                        e.addSuppressed(rollbackFailure);
+                    }
+                }
                 throw e;
             } finally {
                 dao.close();

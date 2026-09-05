@@ -24,6 +24,7 @@ public class DispatchResult {
     private Calendar responseDate;
     private boolean attemptedResponse;
     private String responseError;
+    private long messageIncarnationId;
 
     protected DispatchResult(long messageId, Message processedMessage, Response selectedResponse, boolean markAsProcessed, boolean lockAcquired) {
         this(messageId, processedMessage, selectedResponse, markAsProcessed, lockAcquired, null);
@@ -85,5 +86,13 @@ public class DispatchResult {
 
     public void setResponseError(String responseError) {
         this.responseError = responseError;
+    }
+
+    public long getMessageIncarnationId() {
+        return messageIncarnationId;
+    }
+
+    protected void setMessageIncarnationId(long messageIncarnationId) {
+        this.messageIncarnationId = messageIncarnationId;
     }
 }

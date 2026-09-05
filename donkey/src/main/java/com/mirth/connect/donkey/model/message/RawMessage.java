@@ -16,6 +16,10 @@ import java.util.List;
 import java.util.Map;
 
 import com.mirth.connect.donkey.model.message.attachment.Attachment;
+import com.mirth.connect.donkey.server.channel.lifecycle.InboundParentState;
+import com.mirth.connect.donkey.server.channel.lifecycle.InboundTraceParent;
+import com.mirth.connect.donkey.server.channel.lifecycle.LifecycleDispatchToken;
+import com.mirth.connect.donkey.server.channel.lifecycle.MessageLineage;
 
 public class RawMessage implements Serializable {
     private boolean overwrite;
@@ -27,6 +31,10 @@ public class RawMessage implements Serializable {
     private Map<String, Object> sourceMap = new HashMap<String, Object>();
     private Boolean binary;
     private List<Attachment> attachments;
+    private transient LifecycleDispatchToken lifecycleDispatchToken;
+    private transient InboundParentState inboundParentState;
+    private transient InboundTraceParent inboundTraceParent;
+    private transient MessageLineage messageLineage;
 
     public RawMessage(String rawData) {
         this(rawData, null);
@@ -140,6 +148,38 @@ public class RawMessage implements Serializable {
         this.rawBytes = null;
         this.rawData = null;
         this.attachments = null;
+    }
+
+    public LifecycleDispatchToken getLifecycleDispatchToken() {
+        return lifecycleDispatchToken;
+    }
+
+    public void setLifecycleDispatchToken(LifecycleDispatchToken lifecycleDispatchToken) {
+        this.lifecycleDispatchToken = lifecycleDispatchToken;
+    }
+
+    public InboundParentState getInboundParentState() {
+        return inboundParentState;
+    }
+
+    public void setInboundParentState(InboundParentState inboundParentState) {
+        this.inboundParentState = inboundParentState;
+    }
+
+    public InboundTraceParent getInboundTraceParent() {
+        return inboundTraceParent;
+    }
+
+    public void setInboundTraceParent(InboundTraceParent inboundTraceParent) {
+        this.inboundTraceParent = inboundTraceParent;
+    }
+
+    public MessageLineage getMessageLineage() {
+        return messageLineage;
+    }
+
+    public void setMessageLineage(MessageLineage messageLineage) {
+        this.messageLineage = messageLineage;
     }
 
     @Override

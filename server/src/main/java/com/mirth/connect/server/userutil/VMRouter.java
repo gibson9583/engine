@@ -111,6 +111,12 @@ public class VMRouter {
 
             return response;
         } catch (Throwable e) {
+            if (e instanceof VirtualMachineError) {
+                throw (VirtualMachineError) e;
+            }
+            if (e instanceof ThreadDeath) {
+                throw (ThreadDeath) e;
+            }
             String message = "Error routing message to channel id: " + channelId;
             logger.error(message, e);
             String responseStatusMessage = ErrorMessageBuilder.buildErrorResponse(message, e);

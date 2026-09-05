@@ -166,6 +166,7 @@ public class RecoveryTask implements Callable<Void> {
                             logger.debug("Recovering incomplete message " + messageId + " for channel " + channel.getName() + " (" + channel.getChannelId() + ")");
 
                             // Execute the recovery process for this message
+                            channel.initializeRecoveryLifecycle(sourceConnectorMessage);
                             channel.process(sourceConnectorMessage, true);
                             // Use this to decrement the queue size
                             channel.getSourceQueue().decrementSize();
@@ -191,6 +192,7 @@ public class RecoveryTask implements Callable<Void> {
                         logger.debug("Recovering incomplete unfinished message " + messageId + " for channel " + channel.getName() + " (" + channel.getChannelId() + ")");
 
                         // Execute the recovery process for this message
+                        channel.initializeRecoveryLifecycle(unfinishedMessage);
                         recoverUnfinishedMessage(unfinishedMessage);
                         logger.debug("Recovered incomplete unfinished message " + messageId + " for channel " + channel.getName() + " (" + channel.getChannelId() + ")");
                         // Increment the number of successfully recovered messages
@@ -207,6 +209,7 @@ public class RecoveryTask implements Callable<Void> {
                         logger.debug("Recovering incomplete pending message " + messageId + " for channel " + channel.getName() + " (" + channel.getChannelId() + ")");
 
                         // Execute the recovery process for this message
+                        channel.initializeRecoveryLifecycle(pendingMessage);
                         recoverPendingMessage(pendingMessage);
                         logger.debug("Recovered incomplete pending message " + messageId + " for channel " + channel.getName() + " (" + channel.getChannelId() + ")");
                         // Increment the number of successfully recovered messages
@@ -276,6 +279,7 @@ public class RecoveryTask implements Callable<Void> {
                             chain.setEnabledMetaDataIds(enabledMetaDataIds);
                             chain.setMessage(connectorMessage);
                             chain.setName("Recovery Task Destination Chain Thread on " + channel.getName() + " (" + channel.getChannelId() + ")");
+                            chain.setLifecycle(com.mirth.connect.donkey.server.channel.lifecycle.ExecutionMode.RECOVERY, null);
                             List<ConnectorMessage> recoveredConnectorMessages = chain.call();
 
                             /*
@@ -321,6 +325,7 @@ public class RecoveryTask implements Callable<Void> {
             }
 
             DispatchResult dispatchResult = new DispatchResult(unfinishedMessage.getMessageId(), unfinishedMessage, response, true, false);
+            dispatchResult.setMessageIncarnationId(unfinishedMessage.getMessageIncarnationId());
 
             if (StringUtils.isNotBlank(responseErrorMessage)) {
                 dispatchResult.setResponseError(responseErrorMessage);
@@ -344,6 +349,7 @@ public class RecoveryTask implements Callable<Void> {
                     chain.setEnabledMetaDataIds(enabledMetaDataIds);
                     chain.setMessage(pendingConnectorMessage);
                     chain.setName("Recovery Task Destination Chain Thread on " + channel.getName() + " (" + channel.getChannelId() + ")");
+                    chain.setLifecycle(com.mirth.connect.donkey.server.channel.lifecycle.ExecutionMode.RECOVERY, null);
                     chain.call();
 
                     break;

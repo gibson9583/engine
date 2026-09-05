@@ -464,6 +464,12 @@ public class DonkeyMessageController extends MessageController {
                             return;
                         }
                     } catch (Throwable e) {
+                        if (e instanceof VirtualMachineError) {
+                            throw (VirtualMachineError) e;
+                        }
+                        if (e instanceof ThreadDeath) {
+                            throw (ThreadDeath) e;
+                        }
                         // Do nothing. An error should have been logged.
                     }
                 } else {

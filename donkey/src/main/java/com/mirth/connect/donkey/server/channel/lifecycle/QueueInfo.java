@@ -11,9 +11,9 @@ import java.util.Objects;
 public final class QueueInfo {
     private final MessageInfo message;
     private final ExecutionMode executionMode;
-    private final int nextSendAttempt;
+    private final long nextSendAttempt;
 
-    public QueueInfo(MessageInfo message, ExecutionMode executionMode, int nextSendAttempt) {
+    public QueueInfo(MessageInfo message, ExecutionMode executionMode, long nextSendAttempt) {
         this.message = Objects.requireNonNull(message, "message");
         this.executionMode = Objects.requireNonNull(executionMode, "executionMode");
         if (message.getMetaDataId() == 0 || message.getChainId() == null) {
@@ -23,7 +23,7 @@ public final class QueueInfo {
         if (nextSendAttempt <= 0) {
             throw new IllegalArgumentException("nextSendAttempt must be positive");
         }
-        if ((long) nextSendAttempt != (long) message.getSendAttempts() + 1L) {
+        if (nextSendAttempt != (long) message.getSendAttempts() + 1L) {
             throw new IllegalArgumentException(
                     "nextSendAttempt must equal completed sendAttempts plus one");
         }
@@ -38,7 +38,7 @@ public final class QueueInfo {
         return executionMode;
     }
 
-    public int getNextSendAttempt() {
+    public long getNextSendAttempt() {
         return nextSendAttempt;
     }
 }

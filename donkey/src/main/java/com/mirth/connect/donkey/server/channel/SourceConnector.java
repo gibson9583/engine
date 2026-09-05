@@ -31,6 +31,8 @@ import com.mirth.connect.donkey.model.message.RawMessage;
 import com.mirth.connect.donkey.model.message.Response;
 import com.mirth.connect.donkey.server.ConnectorTaskException;
 import com.mirth.connect.donkey.server.Constants;
+import com.mirth.connect.donkey.server.channel.lifecycle.InboundParentState;
+import com.mirth.connect.donkey.server.channel.lifecycle.LifecycleDispatchToken;
 import com.mirth.connect.donkey.server.data.DonkeyDao;
 import com.mirth.connect.donkey.server.data.DonkeyDaoFactory;
 import com.mirth.connect.donkey.server.event.ConnectionStatusEvent;
@@ -211,6 +213,15 @@ public abstract class SourceConnector extends Connector {
             throw e;
         }
 
+        LifecycleDispatchToken lifecycleToken = batchRawMessage.getLifecycleDispatchToken();
+        if (lifecycleToken == null) {
+            lifecycleToken = MessageLifecycleSupport.listeners().captureToken();
+            batchRawMessage.setLifecycleDispatchToken(lifecycleToken);
+        }
+        if (!lifecycleToken.isEmpty() && batchRawMessage.getInboundParentState() == null) {
+            batchRawMessage.setInboundParentState(InboundParentState.ABSENT);
+        }
+
         // Use an empty response handler if one is not provided
         if (responseHandler == null) {
             responseHandler = new SimpleResponseHandler();
@@ -249,6 +260,12 @@ public abstract class SourceConnector extends Connector {
 
                     // Create a new RawMessage to be dispatched
                     RawMessage rawMessage = new RawMessage(message, destinationMetaDataIds, sourceMap, batchRawMessage.getAttachments());
+                    rawMessage.setLifecycleDispatchToken(lifecycleToken);
+                    if (!lifecycleToken.isEmpty()) {
+                        rawMessage.setInboundParentState(batchRawMessage.getInboundParentState());
+                        rawMessage.setInboundTraceParent(batchRawMessage.getInboundTraceParent());
+                        rawMessage.setMessageLineage(batchRawMessage.getMessageLineage());
+                    }
 
                     DispatchResult dispatchResult = null;
                     try {

@@ -45,6 +45,17 @@ import com.mirth.connect.donkey.model.message.attachment.AttachmentHandlerProvid
 import com.mirth.connect.donkey.server.ConnectorTaskException;
 import com.mirth.connect.donkey.server.Constants;
 import com.mirth.connect.donkey.server.Donkey;
+import com.mirth.connect.donkey.server.channel.lifecycle.ExecutionMode;
+import com.mirth.connect.donkey.server.channel.lifecycle.FailureCategory;
+import com.mirth.connect.donkey.server.channel.lifecycle.FailureInfo;
+import com.mirth.connect.donkey.server.channel.lifecycle.HandoffBundle;
+import com.mirth.connect.donkey.server.channel.lifecycle.HandoffCancellationBatch;
+import com.mirth.connect.donkey.server.channel.lifecycle.HandoffCancellationReason;
+import com.mirth.connect.donkey.server.channel.lifecycle.HandoffKind;
+import com.mirth.connect.donkey.server.channel.lifecycle.LifecycleHandle;
+import com.mirth.connect.donkey.server.channel.lifecycle.MessageInfo;
+import com.mirth.connect.donkey.server.channel.lifecycle.QueueInfo;
+import com.mirth.connect.donkey.server.channel.lifecycle.SendInfo;
 import com.mirth.connect.donkey.server.data.DonkeyDao;
 import com.mirth.connect.donkey.server.data.DonkeyDaoFactory;
 import com.mirth.connect.donkey.server.event.ConnectionStatusEvent;
@@ -411,10 +422,15 @@ public abstract class DestinationConnector extends Connector implements Runnable
             getFilterTransformerExecutor().processConnectorMessage(message);
         } catch (DonkeyException e) {
             if (e instanceof MessageSerializerException) {
-                Donkey.getInstance().getEventDispatcher().dispatchEvent(new ErrorEvent(getChannelId(), getMetaDataId(), message.getMessageId(), ErrorEventType.SERIALIZER, destinationName, null, e.getMessage(), e));
+                Donkey.getInstance().getEventDispatcher().dispatchEvent(new ErrorEvent(getChannelId(), getMetaDataId(), message.getMessageId(), ErrorEventType.SERIALIZER, destinationName, getLifecycleConnectorType(), e.getMessage(), e, message.getMessageIncarnationId()));
             }
 
             message.setStatus(Status.ERROR);
+            message.setLifecycleFailureInfo(MessageLifecycleSupport.failure(
+                    e instanceof MessageSerializerException ? FailureCategory.SERIALIZER
+                            : MessageLifecycleSupport.failureCategory(e,
+                                    FailureCategory.TRANSFORMER),
+                    e));
             message.setProcessingError(e.getFormattedError());
         }
 
@@ -468,7 +484,8 @@ public abstract class DestinationConnector extends Connector implements Runnable
                 message.getResponseMap().put("d" + String.valueOf(getMetaDataId()), new Response(Status.ERROR, "", "Error converting message or evaluating filter/transformer"));
             }
 
-            dao.updateStatus(message, previousStatus);
+            MessageLifecycleSupport.updateStatus(dao, message, previousStatus,
+                    message.getStatus(), message.getLifecycleFailureInfo());
 
             if (storageSettings.isStoreMaps()) {
                 dao.updateMaps(message);
@@ -528,7 +545,6 @@ public abstract class DestinationConnector extends Connector implements Runnable
                 // NOTE: Send attempts here will not be persisted until all attempts have completed since there is only one transaction.
                 // Each attempt from the queue will be persisted though.
                 message.setSendAttempts(++sendAttempts);
-                response.fixStatus(isQueueEnabled());
                 responseStatus = response.getStatus();
             } while ((responseStatus == Status.ERROR || responseStatus == Status.QUEUED) && (sendAttempts - 1) < retryCount);
 
@@ -551,7 +567,7 @@ public abstract class DestinationConnector extends Connector implements Runnable
             ThreadUtils.checkInterruptedStatus();
         }
 
-        dao.updateStatus(message, previousStatus);
+        MessageLifecycleSupport.updateStatus(dao, message, previousStatus, Status.QUEUED, null);
     }
 
     /**
@@ -628,12 +644,49 @@ public abstract class DestinationConnector extends Connector implements Runnable
             try {
                 if (canAcquire) {
                     connectorMessage = queue.acquire();
+                    if (connectorMessage != null
+                            && connectorMessage.getLifecycleDispatchToken() == null) {
+                        MessageLifecycleSupport.initializeRecovered(connectorMessage, this,
+                                ExecutionMode.PERSISTED_QUEUE_REFILL);
+                    }
                 }
 
                 if (connectorMessage != null) {
                     boolean exceptionCaught = false;
+                    boolean interrupted = false;
+                    Throwable lifecycleFailure = null;
+                    LifecycleHandle queueLifecycleHandle = LifecycleHandle.NOOP;
+                    connectorMessage.setLifecycleRolledBack(false);
+                    commitSuccess = false;
+                    dao = null;
 
                     try {
+                        MessageInfo queueMessageInfo = MessageLifecycleSupport.snapshot(
+                                connectorMessage);
+                        HandoffBundle queueHandoff;
+                        if (queueMessageInfo != null) {
+                            ExecutionMode executionMode = connectorMessage
+                                    .getLifecycleExecutionMode();
+                            if (executionMode == null) {
+                                executionMode = ExecutionMode.DESTINATION_QUEUE;
+                                connectorMessage.setLifecycleExecutionMode(executionMode);
+                            }
+                            QueueInfo queueInfo = new QueueInfo(queueMessageInfo, executionMode,
+                                    (long) connectorMessage.getSendAttempts() + 1L);
+                            queueHandoff = connectorMessage.takeLifecycleHandoffBundle();
+                            queueLifecycleHandle = queueHandoff != null
+                                    ? MessageLifecycleSupport.listeners()
+                                            .onDestinationQueueStart(queueInfo, queueHandoff)
+                                    : MessageLifecycleSupport.listeners().onDestinationQueueStart(
+                                            connectorMessage.getLifecycleDispatchToken(), queueInfo);
+                        } else {
+                            queueHandoff = connectorMessage.takeLifecycleHandoffBundle();
+                            if (queueHandoff != null) {
+                                MessageLifecycleSupport.listeners().cancelHandoffs(queueHandoff,
+                                        HandoffCancellationReason.TRANSFER_FAILED);
+                            }
+                        }
+
                         /*
                          * If the last message id is equal to the current message id, then the
                          * message was not successfully sent and is being retried, so wait the retry
@@ -700,14 +753,27 @@ public abstract class DestinationConnector extends Connector implements Runnable
                              * the message to ERROR.
                              */
                             if (connectorMessage.getSent() == null && !includeFilterTransformerInQueue()) {
-                                connectorMessage.setStatus(Status.ERROR);
                                 connectorMessage.setProcessingError("Queued message has not yet been transformed, and Include Filter/Transformer is currently disabled.");
 
-                                dao.updateStatus(connectorMessage, previousStatus);
+                                MessageLifecycleSupport.updateStatus(dao, connectorMessage,
+                                        previousStatus, Status.ERROR,
+                                        MessageLifecycleSupport.failure(
+                                                FailureCategory.DESTINATION_CONNECTOR, null));
                                 dao.updateErrors(connectorMessage);
                             } else {
                                 if (includeFilterTransformerInQueue()) {
                                     transform(dao, connectorMessage, previousStatus, connectorMessage.getSent() == null);
+                                }
+
+                                if (connectorMessage.getStatus() == Status.QUEUED
+                                        && connectorMessage.getSendAttempts() == Integer.MAX_VALUE) {
+                                    connectorMessage.setProcessingError(
+                                            "Queued message has exhausted the supported send-attempt range.");
+                                    MessageLifecycleSupport.updateStatus(dao, connectorMessage,
+                                            previousStatus, Status.ERROR,
+                                            MessageLifecycleSupport.failure(
+                                                    FailureCategory.DESTINATION_CONNECTOR, null));
+                                    dao.updateErrors(connectorMessage);
                                 }
 
                                 if (connectorMessage.getStatus() == Status.QUEUED) {
@@ -728,21 +794,23 @@ public abstract class DestinationConnector extends Connector implements Runnable
                                     }
 
                                     Response response = handleSend(connectorProperties, connectorMessage);
-                                    connectorMessage.setSendAttempts(connectorMessage.getSendAttempts() + 1);
+                                    connectorMessage.setSendAttempts(
+                                            Math.addExact(connectorMessage.getSendAttempts(), 1));
 
                                     if (response == null) {
                                         throw new RuntimeException("Received null response from destination " + destinationName + ".");
                                     }
-                                    response.fixStatus(isQueueEnabled());
 
                                     afterSend(dao, connectorMessage, response, previousStatus);
                                 }
                             }
                         } else {
-                            connectorMessage.setStatus(Status.ERROR);
                             connectorMessage.setProcessingError("Mismatched connector properties detected in queued message. The connector type may have changed since the message was queued.\nFOUND: " + serializedPropertiesClass.getSimpleName() + "\nEXPECTED: " + connectorPropertiesClass.getSimpleName());
 
-                            dao.updateStatus(connectorMessage, previousStatus);
+                            MessageLifecycleSupport.updateStatus(dao, connectorMessage,
+                                    previousStatus, Status.ERROR,
+                                    MessageLifecycleSupport.failure(
+                                            FailureCategory.DESTINATION_CONNECTOR, null));
                             dao.updateErrors(connectorMessage);
                         }
 
@@ -776,6 +844,7 @@ public abstract class DestinationConnector extends Connector implements Runnable
                             }
                         }
                     } catch (RuntimeException e) {
+                        lifecycleFailure = e;
                         logger.error("Error processing queued " + (connectorMessage != null ? connectorMessage.toString() : "message (null)") + " for channel " + channel.getName() + " (" + channel.getChannelId() + ") on destination " + destinationName + ". This error is expected if the message was manually removed from the queue.", e);
                         /*
                          * Invalidate the queue's buffer if any errors occurred. If the message
@@ -787,65 +856,174 @@ public abstract class DestinationConnector extends Connector implements Runnable
                         exceptionCaught = true;
                     } catch (InterruptedException e) {
                         // Stop this thread if it was halted
+                        lifecycleFailure = e;
+                        interrupted = true;
                         return;
                     } catch (Throwable t) {
+                        lifecycleFailure = t;
+                        exceptionCaught = true;
+                        MessageLifecycleSupport.throwIfFatal(t);
                         // Send a different error message to the server log, but still invalidate the queue buffer
                         logger.error("Error processing queued " + (connectorMessage != null ? connectorMessage.toString() : "message (null)") + " for channel " + channel.getName() + " (" + channel.getChannelId() + ") on destination " + destinationName + ".", t);
-                        getChannel().getEventDispatcher().dispatchEvent(new ErrorEvent(getChannelId(), getMetaDataId(), connectorMessage != null ? connectorMessage.getMessageId() : null, ErrorEventType.DESTINATION_CONNECTOR, getDestinationName(), getConnectorProperties().getName(), t.getMessage(), t));
+                        getChannel().getEventDispatcher().dispatchEvent(new ErrorEvent(getChannelId(), getMetaDataId(), connectorMessage != null ? connectorMessage.getMessageId() : null, ErrorEventType.DESTINATION_CONNECTOR, getDestinationName(), getConnectorProperties().getName(), t.getMessage(), t, connectorMessage != null ? connectorMessage.getMessageIncarnationId() : 0L));
                         exceptionCaught = true;
                     } finally {
+                        Throwable finalizationFailure = null;
+                        HandoffBundle nextHandoff = null;
+                        boolean nextHandoffHandled = true;
+                        boolean queueWillContinue = !exceptionCaught && !interrupted
+                                && connectorMessage.getStatus() == Status.QUEUED
+                                && (getCurrentState() == DeployedState.STARTED
+                                        || getCurrentState() == DeployedState.STARTING)
+                                && !stopQueue.get();
+
+                        if (queueWillContinue) {
+                            try {
+                                nextHandoff = MessageLifecycleSupport.createHandoff(
+                                        connectorMessage, HandoffKind.DESTINATION_QUEUE);
+                                nextHandoffHandled = nextHandoff == null;
+                            } catch (Throwable t) {
+                                finalizationFailure = appendFailure(finalizationFailure, t);
+                                exceptionCaught = true;
+                            }
+                        }
+
                         if (dao != null) {
                             if (!commitSuccess) {
+                                connectorMessage.setLifecycleRolledBack(true);
                                 try {
                                     dao.rollback();
-                                } catch (Exception e) {}
+                                } catch (Throwable t) {
+                                    finalizationFailure = appendFailure(finalizationFailure, t);
+                                }
                             }
-                            dao.close();
+                            try {
+                                dao.close();
+                            } catch (Throwable t) {
+                                finalizationFailure = appendFailure(finalizationFailure, t);
+                            }
                         }
 
                         /*
-                         * We always want to release the message if it's done (obviously).
+                         * We always want to release the message if it's done. Queue cleanup is
+                         * attempted even if DAO cleanup failed so that a committed queued message
+                         * retains its continuation handoff.
                          */
-                        if (exceptionCaught) {
-                            /*
-                             * If an runtime exception was caught, we can't guarantee whether that
-                             * message was deleted or is still in the database. When it is released,
-                             * the message will be removed from the in-memory queue. However we need
-                             * to invalidate the queue before allowing any other threads to be able
-                             * to access it in case the message is still in the database.
-                             */
-                            canAcquire = true;
-                            synchronized (queue) {
-                                queue.release(connectorMessage, true);
+                        try {
+                            if (exceptionCaught) {
+                                /*
+                                 * If a runtime exception was caught, we can't guarantee whether
+                                 * that message was deleted or is still in the database. When it is
+                                 * released, the message will be removed from the in-memory queue.
+                                 * However we need to invalidate the queue before allowing any other
+                                 * threads to be able to access it in case the message is still in
+                                 * the database.
+                                 */
+                                canAcquire = true;
+                                HandoffCancellationBatch[] releaseCancellations = null;
+                                HandoffCancellationBatch[] invalidateCancellations = null;
+                                Throwable queueFailure = null;
+                                synchronized (queue) {
+                                    try {
+                                        releaseCancellations = queue.releaseWithHandoffLocked(
+                                                connectorMessage, true, null);
+                                    } catch (Throwable t) {
+                                        queueFailure = appendFailure(queueFailure, t);
+                                    }
 
-                                // Release the read lock now before calling invalidate
-                                if (statusUpdateLock != null) {
-                                    statusUpdateLock.unlock();
-                                    statusUpdateLock = null;
+                                    // Release the read lock now before calling invalidate
+                                    if (statusUpdateLock != null) {
+                                        try {
+                                            statusUpdateLock.unlock();
+                                        } catch (Throwable t) {
+                                            queueFailure = appendFailure(queueFailure, t);
+                                        } finally {
+                                            statusUpdateLock = null;
+                                        }
+                                    }
+
+                                    try {
+                                        invalidateCancellations = queue
+                                                .invalidateWithHandoffsLocked(true, false);
+                                    } catch (Throwable t) {
+                                        queueFailure = appendFailure(queueFailure, t);
+                                    }
                                 }
-
-                                queue.invalidate(true, false);
+                                try {
+                                    queue.deliverHandoffCancellations(releaseCancellations);
+                                } catch (Throwable t) {
+                                    queueFailure = appendFailure(queueFailure, t);
+                                }
+                                try {
+                                    queue.deliverHandoffCancellations(invalidateCancellations);
+                                } catch (Throwable t) {
+                                    queueFailure = appendFailure(queueFailure, t);
+                                }
+                                rethrowUnchecked(queueFailure);
+                            } else if (connectorMessage.getStatus() != Status.QUEUED) {
+                                canAcquire = true;
+                                queue.release(connectorMessage, true);
+                            } else if (destinationConnectorProperties.isRotate()) {
+                                canAcquire = true;
+                                HandoffCancellationBatch[] cancellations;
+                                synchronized (queue) {
+                                    nextHandoffHandled = true;
+                                    cancellations = queue.releaseWithHandoffLocked(
+                                            connectorMessage, false, nextHandoff);
+                                }
+                                queue.deliverHandoffCancellations(cancellations);
+                            } else {
+                                /*
+                                 * If the message is still queued, no exception occurred, and queue
+                                 * rotation is disabled, we still want to force the queue to
+                                 * re-acquire a message if it has been marked as deleted by another
+                                 * process.
+                                 */
+                                connectorMessage.setLifecycleHandoffBundle(nextHandoff);
+                                nextHandoffHandled = true;
+                                canAcquire = queue.releaseIfDeleted(connectorMessage);
                             }
-                        } else if (connectorMessage.getStatus() != Status.QUEUED) {
-                            canAcquire = true;
-                            queue.release(connectorMessage, true);
-                        } else if (destinationConnectorProperties.isRotate()) {
-                            canAcquire = true;
-                            queue.release(connectorMessage, false);
-                        } else {
-                            /*
-                             * If the message is still queued, no exception occurred, and queue
-                             * rotation is disabled, we still want to force the queue to re-acquire
-                             * a message if it has been marked as deleted by another process.
-                             */
-                            canAcquire = queue.releaseIfDeleted(connectorMessage);
+                        } catch (Throwable t) {
+                            finalizationFailure = appendFailure(finalizationFailure, t);
                         }
 
-                        // Always release the read lock if we obtained it
-                        if (statusUpdateLock != null) {
-                            statusUpdateLock.unlock();
-                            statusUpdateLock = null;
+                        if (!nextHandoffHandled && nextHandoff != null) {
+                            try {
+                                MessageLifecycleSupport.listeners().cancelHandoffs(nextHandoff,
+                                        HandoffCancellationReason.TRANSFER_FAILED);
+                            } catch (Throwable t) {
+                                finalizationFailure = appendFailure(finalizationFailure, t);
+                            }
                         }
+
+                        if (statusUpdateLock != null) {
+                            try {
+                                statusUpdateLock.unlock();
+                            } catch (Throwable t) {
+                                finalizationFailure = appendFailure(finalizationFailure, t);
+                            } finally {
+                                statusUpdateLock = null;
+                            }
+                        }
+                        try {
+                            queue.deliverHandoffCancellations(null);
+                        } catch (Throwable t) {
+                            finalizationFailure = appendFailure(finalizationFailure, t);
+                        }
+
+                        Throwable resultFailure = lifecycleFailure != null ? lifecycleFailure
+                                : finalizationFailure;
+                        try {
+                            queueLifecycleHandle.end(MessageLifecycleSupport.result(
+                                    connectorMessage, resultFailure,
+                                    connectorMessage.isLifecycleRolledBack(), null,
+                                    FailureCategory.DESTINATION_CONNECTOR));
+                        } catch (Throwable t) {
+                            finalizationFailure = appendFailure(finalizationFailure, t);
+                        }
+
+                        MessageLifecycleSupport.throwIfFatal(lifecycleFailure);
+                        rethrowUnchecked(finalizationFailure);
                     }
                 } else {
                     /*
@@ -858,6 +1036,7 @@ public abstract class DestinationConnector extends Connector implements Runnable
                 // Stop this thread if it was halted
                 return;
             } catch (Throwable t) {
+                MessageLifecycleSupport.throwIfFatal(t);
                 // Always release the read lock if we obtained it
                 if (statusUpdateLock != null) {
                     statusUpdateLock.unlock();
@@ -892,9 +1071,56 @@ public abstract class DestinationConnector extends Connector implements Runnable
                 }
             }
         } while ((getCurrentState() == DeployedState.STARTED || getCurrentState() == DeployedState.STARTING) && !stopQueue.get());
+
+        if (connectorMessage != null) {
+            HandoffBundle abandoned = connectorMessage.takeLifecycleHandoffBundle();
+            if (abandoned != null) {
+                MessageLifecycleSupport.listeners().cancelHandoffs(abandoned,
+                        HandoffCancellationReason.SHUTDOWN);
+            }
+        }
     }
 
     private Response handleSend(ConnectorProperties connectorProperties, ConnectorMessage message) throws InterruptedException {
+        // Failure ownership is per attempt; an immediate retry must not inherit its predecessor.
+        message.setLifecycleFailureInfo(null);
+        if (message.getSendAttempts() == Integer.MAX_VALUE) {
+            throw new IllegalStateException(
+                    "Cannot send a message after the send-attempt counter is exhausted.");
+        }
+        if (!MessageLifecycleSupport.isEnabled(message)) {
+            return handleSendInternal(connectorProperties, message);
+        }
+        MessageInfo messageInfo = MessageLifecycleSupport.snapshot(message);
+        if (messageInfo == null) {
+            return handleSendInternal(connectorProperties, message);
+        }
+
+        LifecycleHandle lifecycleHandle = MessageLifecycleSupport.listeners().onSendStart(
+                message.getLifecycleDispatchToken(), new SendInfo(messageInfo,
+                        message.getLifecycleExecutionMode() != null
+                                ? message.getLifecycleExecutionMode()
+                                : ExecutionMode.SYNCHRONOUS,
+                        message.getSendAttempts() + 1));
+        Throwable lifecycleFailure = null;
+        Response response = null;
+        try {
+            response = handleSendInternal(connectorProperties, message);
+            if (response != null) {
+                response.fixStatus(isQueueEnabled());
+            }
+            return response;
+        } catch (Throwable t) {
+            lifecycleFailure = t;
+            throw t;
+        } finally {
+            Status responseStatus = response != null ? response.getStatus() : null;
+            lifecycleHandle.end(MessageLifecycleSupport.result(message, lifecycleFailure, false,
+                    responseStatus, FailureCategory.DESTINATION_CONNECTOR));
+        }
+    }
+
+    private Response handleSendInternal(ConnectorProperties connectorProperties, ConnectorMessage message) throws InterruptedException {
         message.setSendDate(Calendar.getInstance());
         Response response;
 
@@ -913,10 +1139,18 @@ public abstract class DestinationConnector extends Connector implements Runnable
         }
 
         if (response.isValidate() && response.getStatus() == Status.SENT) {
-            response = responseValidator.validate(response, message);
+            try {
+                response = responseValidator.validate(response, message);
+            } catch (RuntimeException e) {
+                message.setLifecycleFailureInfo(MessageLifecycleSupport.failure(
+                        FailureCategory.RESPONSE_VALIDATION, e));
+                throw e;
+            }
 
             if (response.getStatus() != Status.SENT) {
-                channel.getEventDispatcher().dispatchEvent(new ErrorEvent(getChannelId(), getMetaDataId(), message.getMessageId(), ErrorEventType.RESPONSE_VALIDATION, getDestinationName(), connectorProperties.getName(), response.getStatusMessage(), null));
+                message.setLifecycleFailureInfo(MessageLifecycleSupport.failure(
+                        FailureCategory.RESPONSE_VALIDATION, null));
+                channel.getEventDispatcher().dispatchEvent(new ErrorEvent(getChannelId(), getMetaDataId(), message.getMessageId(), ErrorEventType.RESPONSE_VALIDATION, getDestinationName(), connectorProperties.getName(), response.getStatusMessage(), null, message.getMessageIncarnationId()));
             }
         }
         message.setResponseDate(Calendar.getInstance());
@@ -952,8 +1186,8 @@ public abstract class DestinationConnector extends Connector implements Runnable
          * transformWithoutSerializing can still run
          */
         if (responseTransformerExecutor.isActive(response)) {
-            message.setStatus(Status.PENDING);
-            dao.updateStatus(message, previousStatus);
+            MessageLifecycleSupport.updateStatus(dao, message, previousStatus,
+                    Status.PENDING, null);
             dao.commit(storageSettings.isDurable());
             previousStatus = message.getStatus();
         }
@@ -976,9 +1210,10 @@ public abstract class DestinationConnector extends Connector implements Runnable
             logger.error("Error executing response transformer for channel " + channel.getName() + " (" + channel.getChannelId() + ") on destination " + destinationName + ".", e);
             response.setStatus(Status.ERROR);
             response.setError(e.getFormattedError());
-            message.setStatus(response.getStatus());
             message.setProcessingError(message.getProcessingError() != null ? message.getProcessingError() + System.getProperty("line.separator") + System.getProperty("line.separator") + e.getFormattedError() : e.getFormattedError());
-            dao.updateStatus(message, previousStatus);
+            MessageLifecycleSupport.updateStatus(dao, message, previousStatus,
+                    response.getStatus(), MessageLifecycleSupport.failure(
+                            FailureCategory.RESPONSE_TRANSFORMER, e));
             dao.updateErrors(message);
             return;
         }
@@ -1009,9 +1244,45 @@ public abstract class DestinationConnector extends Connector implements Runnable
 
     private void afterResponse(DonkeyDao dao, ConnectorMessage connectorMessage, Response response, Status previousStatus) {
         // the response status from the response transformer should be one of: FILTERED, ERROR, SENT, or QUEUED
-        connectorMessage.setStatus(response.getStatus());
-        dao.updateStatus(connectorMessage, previousStatus);
+        FailureInfo failure = response.getStatus() == Status.ERROR
+                ? MessageLifecycleSupport.failure(connectorMessage,
+                        FailureCategory.DESTINATION_CONNECTOR, null)
+                : null;
+        MessageLifecycleSupport.updateStatus(dao, connectorMessage, previousStatus,
+                response.getStatus(), failure);
         previousStatus = connectorMessage.getStatus();
+    }
+
+    private static Throwable appendFailure(Throwable existing, Throwable additional) {
+        if (existing == null) {
+            return additional;
+        }
+        if (additional != null && additional != existing) {
+            if (isFatal(additional) && !isFatal(existing)) {
+                additional.addSuppressed(existing);
+                return additional;
+            }
+            existing.addSuppressed(additional);
+        }
+        return existing;
+    }
+
+    private static boolean isFatal(Throwable failure) {
+        return failure instanceof VirtualMachineError || failure instanceof ThreadDeath;
+    }
+
+    private static void rethrowUnchecked(Throwable failure) {
+        if (failure == null) {
+            return;
+        }
+        MessageLifecycleSupport.throwIfFatal(failure);
+        if (failure instanceof RuntimeException) {
+            throw (RuntimeException) failure;
+        }
+        if (failure instanceof Error) {
+            throw (Error) failure;
+        }
+        throw new RuntimeException(failure);
     }
 
     public static class DestinationQueueThread extends Thread {

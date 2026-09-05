@@ -28,6 +28,7 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.FutureTask;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
@@ -74,6 +75,18 @@ import com.mirth.connect.donkey.server.StopException;
 import com.mirth.connect.donkey.server.UndeployException;
 import com.mirth.connect.donkey.server.channel.components.PostProcessor;
 import com.mirth.connect.donkey.server.channel.components.PreProcessor;
+import com.mirth.connect.donkey.server.channel.lifecycle.DispatchInfo;
+import com.mirth.connect.donkey.server.channel.lifecycle.ExecutionMode;
+import com.mirth.connect.donkey.server.channel.lifecycle.FailureCategory;
+import com.mirth.connect.donkey.server.channel.lifecycle.HandoffBundle;
+import com.mirth.connect.donkey.server.channel.lifecycle.HandoffCancellationBatch;
+import com.mirth.connect.donkey.server.channel.lifecycle.HandoffCancellationReason;
+import com.mirth.connect.donkey.server.channel.lifecycle.HandoffKind;
+import com.mirth.connect.donkey.server.channel.lifecycle.InboundParentState;
+import com.mirth.connect.donkey.server.channel.lifecycle.LifecycleDispatchToken;
+import com.mirth.connect.donkey.server.channel.lifecycle.LifecycleHandle;
+import com.mirth.connect.donkey.server.channel.lifecycle.MessageInfo;
+import com.mirth.connect.donkey.server.channel.lifecycle.ProcessInfo;
 import com.mirth.connect.donkey.server.controllers.ChannelController;
 import com.mirth.connect.donkey.server.controllers.MessageController;
 import com.mirth.connect.donkey.server.data.DonkeyDao;
@@ -563,6 +576,7 @@ public class Channel implements Runnable {
 
             responseSelector.setNumDestinations(getDestinationCount());
         } catch (Throwable t) {
+            MessageLifecycleSupport.throwIfFatal(t);
 
             // If an exception occurred, then attempt to rollback by undeploying all the connectors that were deployed
             for (Integer metaDataId : deployedMetaDataIds) {
@@ -612,6 +626,7 @@ public class Channel implements Runnable {
             try {
                 undeployConnector(metaDataId);
             } catch (Throwable t) {
+                MessageLifecycleSupport.throwIfFatal(t);
                 if (firstCause == null) {
                     firstCause = t;
                 }
@@ -773,6 +788,7 @@ public class Channel implements Runnable {
                     updateCurrentState(DeployedState.PAUSED);
                 }
             } catch (Throwable t) {
+                MessageLifecycleSupport.throwIfFatal(t);
                 if (t instanceof InterruptedException) {
                     throw new StartException("Start channel task for " + name + " (" + channelId + ") terminated by halt notification.", t);
                 }
@@ -782,6 +798,7 @@ public class Channel implements Runnable {
                     stop(startedMetaDataIds);
                     updateCurrentState(DeployedState.STOPPED);
                 } catch (Throwable t2) {
+                    MessageLifecycleSupport.throwIfFatal(t2);
                     if (t2 instanceof InterruptedException) {
                         throw new StartException("Start channel task for " + name + " (" + channelId + ") terminated by halt notification.", t);
                     }
@@ -812,6 +829,7 @@ public class Channel implements Runnable {
                 stop(deployedMetaDataIds);
                 updateCurrentState(DeployedState.STOPPED);
             } catch (Throwable t) {
+                MessageLifecycleSupport.throwIfFatal(t);
                 if (t instanceof InterruptedException) {
                     throw new StopException("Stop channel task for " + name + " (" + channelId + ") terminated by halt notification.", t);
                 }
@@ -861,6 +879,7 @@ public class Channel implements Runnable {
             try {
                 haltConnector(metaDataId);
             } catch (Throwable t) {
+                MessageLifecycleSupport.throwIfFatal(t);
             }
         }
 
@@ -876,6 +895,7 @@ public class Channel implements Runnable {
                     halt(deployedMetaDataIds);
                     updateCurrentState(DeployedState.STOPPED);
                 } catch (Throwable t) {
+                    MessageLifecycleSupport.throwIfFatal(t);
                     if (t instanceof InterruptedException) {
                         throw new HaltException("Halt channel task for " + name + " (" + channelId + ") terminated by another halt notification.", t);
                     }
@@ -894,6 +914,7 @@ public class Channel implements Runnable {
                 sourceConnector.stop();
                 updateCurrentState(DeployedState.PAUSED);
             } catch (Throwable t) {
+                MessageLifecycleSupport.throwIfFatal(t);
                 if (t instanceof InterruptedException) {
                     throw new PauseException("Pause channel task for " + name + " (" + channelId + ") terminated by halt notification.", t);
                 }
@@ -916,6 +937,7 @@ public class Channel implements Runnable {
                 sourceConnector.start();
                 updateCurrentState(DeployedState.STARTED);
             } catch (Throwable t) {
+                MessageLifecycleSupport.throwIfFatal(t);
                 if (t instanceof InterruptedException) {
                     throw new ResumeException("Resume channel task for " + name + " (" + channelId + ") terminated by halt notification.", t);
                 }
@@ -925,6 +947,7 @@ public class Channel implements Runnable {
                     sourceConnector.stop();
                     updateCurrentState(DeployedState.PAUSED);
                 } catch (Throwable e2) {
+                    MessageLifecycleSupport.throwIfFatal(e2);
                 }
 
                 throw new ResumeException("Failed to resume channel " + name + " (" + channelId + ").", t);
@@ -1022,6 +1045,7 @@ public class Channel implements Runnable {
         try {
         	sourceConnector.stopDebugging();
         } catch (Throwable t) {
+            MessageLifecycleSupport.throwIfFatal(t);
         	logger.error("Error stopping debugging on Source connector for channel " + name + " (" + channelId + ").", t);
             if (firstCause == null) {
                 firstCause = t;
@@ -1034,6 +1058,7 @@ public class Channel implements Runnable {
                     getDestinationConnector(metaDataId).stopDebugging();
                 }
             } catch (Throwable t) {
+                MessageLifecycleSupport.throwIfFatal(t);
                 logger.error("Error stopping debugging on destination connector \"" + getDestinationConnector(metaDataId).getDestinationName() + "\" for channel " + name + " (" + channelId + ").", t);
                 if (firstCause == null) {
                     firstCause = t;
@@ -1050,6 +1075,7 @@ public class Channel implements Runnable {
         } catch (InterruptedException e) {
             throw e;
         } catch (Throwable t) {
+            MessageLifecycleSupport.throwIfFatal(t);
             logger.error("Error stopping Source connector for channel " + name + " (" + channelId + ").", t);
             if (firstCause == null) {
                 firstCause = t;
@@ -1085,6 +1111,7 @@ public class Channel implements Runnable {
             } catch (InterruptedException e) {
                 throw e;
             } catch (Throwable t) {
+                MessageLifecycleSupport.throwIfFatal(t);
                 logger.error("Error stopping destination connector \"" + getDestinationConnector(metaDataId).getDestinationName() + "\" for channel " + name + " (" + channelId + ").", t);
                 if (firstCause == null) {
                     firstCause = t;
@@ -1134,6 +1161,7 @@ public class Channel implements Runnable {
             } catch (InterruptedException e) {
                 throw e;
             } catch (Throwable t) {
+                MessageLifecycleSupport.throwIfFatal(t);
                 if (t.getCause() instanceof InterruptedException) {
                     throw (InterruptedException) t.getCause();
                 }
@@ -1184,6 +1212,7 @@ public class Channel implements Runnable {
                         destinationConnector.start();
                         destinationConnector.startQueue();
                     } catch (Throwable t) {
+                        MessageLifecycleSupport.throwIfFatal(t);
                         if (t instanceof InterruptedException) {
                             throw new StartException("Start task for connector " + destinationConnector.getDestinationName() + " for channel " + name + " (" + channelId + ") terminated by halt notification.", t);
                         }
@@ -1191,6 +1220,7 @@ public class Channel implements Runnable {
                         try {
                             destinationConnector.stop();
                         } catch (Throwable e2) {
+                            MessageLifecycleSupport.throwIfFatal(e2);
                         }
 
                         throw new StartException("Failed to start connector " + destinationConnector.getDestinationName() + " for channel " + name + " (" + channelId + "). ", t);
@@ -1217,6 +1247,7 @@ public class Channel implements Runnable {
                             destinationConnector.setForceQueue(true);
                             destinationConnector.stop();
                         } catch (Throwable t) {
+                            MessageLifecycleSupport.throwIfFatal(t);
                             throw new StopException("Failed to stop connector " + destinationConnector.getDestinationName() + " for channel " + name + " (" + channelId + "). ", t);
                         }
                     } else {
@@ -1252,6 +1283,41 @@ public class Channel implements Runnable {
             throw new ChannelException(true);
         }
 
+        LifecycleDispatchToken lifecycleToken = rawMessage.getLifecycleDispatchToken();
+        if (lifecycleToken == null) {
+            lifecycleToken = MessageLifecycleSupport.listeners().captureToken();
+            rawMessage.setLifecycleDispatchToken(lifecycleToken);
+        }
+        if (lifecycleToken.isEmpty()) {
+            return dispatchAcceptedRawMessage(rawMessage, batch, null);
+        }
+        if (rawMessage.getInboundParentState() == null) {
+            rawMessage.setInboundParentState(InboundParentState.ABSENT);
+        }
+
+        LifecycleHandle lifecycleHandle = MessageLifecycleSupport.listeners().onDispatchStart(
+                lifecycleToken, new DispatchInfo(StringUtils.defaultString(serverId),
+                        StringUtils.defaultString(channelId), StringUtils.defaultString(name), 0,
+                        StringUtils.defaultString(sourceConnector.getSourceName()), StringUtils.defaultString(
+                                sourceConnector.getLifecycleConnectorType()),
+                        rawMessage.getInboundParentState(), rawMessage.getInboundTraceParent(),
+                        rawMessage.getMessageLineage()));
+        DispatchLifecycleState lifecycleState = new DispatchLifecycleState();
+        try {
+            return dispatchAcceptedRawMessage(rawMessage, batch, lifecycleState);
+        } catch (Throwable t) {
+            lifecycleState.failure = t;
+            throw t;
+        } finally {
+            lifecycleHandle.end(MessageLifecycleSupport.result(lifecycleState.sourceMessage,
+                    lifecycleState.failure, lifecycleState.rolledBack, null,
+                    FailureCategory.UNKNOWN));
+        }
+    }
+
+    private DispatchResult dispatchAcceptedRawMessage(RawMessage rawMessage, boolean batch,
+            DispatchLifecycleState lifecycleState) throws ChannelException {
+
         Thread currentThread = Thread.currentThread();
         String originalThreadName = currentThread.getName();
         boolean lockAcquired = false;
@@ -1275,6 +1341,7 @@ public class Channel implements Runnable {
             DonkeyDao dao = null;
             boolean commitSuccess = false;
             Message processedMessage = null;
+            ConnectorMessage sourceMessage = null;
             Response response = null;
             String responseErrorMessage = null;
             DispatchResult dispatchResult = null;
@@ -1288,7 +1355,7 @@ public class Channel implements Runnable {
                  * message and set the status as RECEIVED - store attachments
                  */
                 dao = daoFactory.getDao();
-                ConnectorMessage sourceMessage = createAndStoreSourceMessage(dao, rawMessage);
+                sourceMessage = createAndStoreSourceMessage(dao, rawMessage, lifecycleState);
                 ThreadUtils.checkInterruptedStatus();
 
                 if (sourceConnector.isRespondAfterProcessing()) {
@@ -1301,13 +1368,36 @@ public class Channel implements Runnable {
 
                     processedMessage = process(sourceMessage, false);
                 } else {
+                    sourceMessage.setLifecycleExecutionMode(ExecutionMode.SOURCE_QUEUE);
+                    HandoffBundle sourceHandoff = MessageLifecycleSupport.createHandoff(
+                            sourceMessage, HandoffKind.SOURCE_QUEUE);
+                    HandoffCancellationBatch[] handoffCancellations = null;
+                    boolean handoffTransferred = false;
+                    boolean offerAttempted = false;
                     // Block other threads from adding to the source queue until both the current commit and queue addition finishes
-                    synchronized (sourceQueue) {
-                        dao.commit(storageSettings.isRawDurable());
-                        commitSuccess = true;
-                        persistedMessageId = sourceMessage.getMessageId();
-                        dao.close();
-                        queue(sourceMessage);
+                    try {
+                        synchronized (sourceQueue) {
+                            dao.commit(storageSettings.isRawDurable());
+                            commitSuccess = true;
+                            persistedMessageId = sourceMessage.getMessageId();
+                            dao.close();
+                            if (!MessageLifecycleSupport.isEnabled(
+                                    sourceMessage.getLifecycleDispatchToken())) {
+                                queue(sourceMessage);
+                            } else {
+                                offerAttempted = true;
+                                handoffCancellations = sourceQueue.offerWithHandoffLocked(
+                                        sourceMessage, sourceHandoff);
+                            }
+                            handoffTransferred = true;
+                        }
+                    } finally {
+                        if (!handoffTransferred && !offerAttempted && sourceHandoff != null) {
+                            MessageLifecycleSupport.listeners().cancelHandoffs(sourceHandoff,
+                                    commitSuccess ? HandoffCancellationReason.TRANSFER_FAILED
+                                            : HandoffCancellationReason.ROLLED_BACK);
+                        }
+                        sourceQueue.deliverHandoffCancellations(handoffCancellations);
                     }
 
                     markDeletedQueuedMessages(rawMessage, persistedMessageId);
@@ -1333,6 +1423,9 @@ public class Channel implements Runnable {
 
                 if (dao != null && !dao.isClosed()) {
                     if (!commitSuccess) {
+                        if (lifecycleState != null && lifecycleState.sourceMessage != null) {
+                            lifecycleState.rolledBack = true;
+                        }
                         try {
                             dao.rollback();
                         } catch (Exception e) {}
@@ -1343,6 +1436,7 @@ public class Channel implements Runnable {
                 // Create the DispatchResult at the very end because lockAcquired might have changed
                 if (persistedMessageId != null) {
                     dispatchResult = new DispatchResult(persistedMessageId, processedMessage, response, sourceConnector.isRespondAfterProcessing(), lockAcquired);
+                    dispatchResult.setMessageIncarnationId(sourceMessage.getMessageIncarnationId());
 
                     if (StringUtils.isNotBlank(responseErrorMessage)) {
                         dispatchResult.setResponseError(responseErrorMessage);
@@ -1361,8 +1455,12 @@ public class Channel implements Runnable {
             // If the message was queued, the source of the message will be notified that the message was not persisted to be safe.
             // This could lead to a potential duplicate message being received/sent, but it is one of the consequences of using halt.
 
+            if (lifecycleState != null) {
+                lifecycleState.failure = e;
+            }
             throw new ChannelException(true, e);
         } catch (Throwable t) {
+            MessageLifecycleSupport.throwIfFatal(t);
             Throwable cause = t.getCause();
             ChannelException channelException = null;
 
@@ -1377,16 +1475,35 @@ public class Channel implements Runnable {
             }
 
             if (persistedMessageId == null) {
+                if (lifecycleState != null) {
+                    lifecycleState.failure = t;
+                }
                 throw channelException;
             }
 
-            return new DispatchResult(persistedMessageId, null, null, false, lockAcquired, channelException);
+            if (lifecycleState != null) {
+                lifecycleState.failure = t;
+            }
+
+            DispatchResult dispatchResult = new DispatchResult(persistedMessageId, null, null,
+                    false, lockAcquired, channelException);
+            if (lifecycleState != null && lifecycleState.sourceMessage != null) {
+                dispatchResult.setMessageIncarnationId(
+                        lifecycleState.sourceMessage.getMessageIncarnationId());
+            }
+            return dispatchResult;
         } finally {
             synchronized (dispatchThreads) {
                 dispatchThreads.remove(currentThread);
             }
             currentThread.setName(originalThreadName);
         }
+    }
+
+    private static final class DispatchLifecycleState {
+        private ConnectorMessage sourceMessage;
+        private Throwable failure;
+        private boolean rolledBack;
     }
 
     private void markDeletedQueuedMessages(RawMessage rawMessage, Long persistedMessageId) throws InterruptedException {
@@ -1416,13 +1533,45 @@ public class Channel implements Runnable {
         }
     }
 
-    private ConnectorMessage createAndStoreSourceMessage(DonkeyDao dao, RawMessage rawMessage) throws ChannelException, InterruptedException {
+    private ConnectorMessage createAndStoreSourceMessage(DonkeyDao dao, RawMessage rawMessage,
+            DispatchLifecycleState lifecycleState) throws ChannelException, InterruptedException {
         ThreadUtils.checkInterruptedStatus();
         Long messageId;
         Calendar receivedDate;
 
-        if (rawMessage.isOverwrite() && rawMessage.getOriginalMessageId() != null) {
+        boolean overwrite = rawMessage.isOverwrite() && rawMessage.getOriginalMessageId() != null;
+        if (overwrite) {
             messageId = rawMessage.getOriginalMessageId();
+            receivedDate = Calendar.getInstance();
+        } else {
+            messageId = dao.getNextMessageId(channelId);
+            receivedDate = Calendar.getInstance();
+        }
+
+        ConnectorMessage sourceMessage = new ConnectorMessage(channelId, name, messageId, 0,
+                serverId, receivedDate, Status.RECEIVED);
+        sourceMessage.setConnectorName(sourceConnector.getSourceName());
+        sourceMessage.setChainId(0);
+        sourceMessage.setOrderId(0);
+
+        LifecycleDispatchToken lifecycleToken = rawMessage.getLifecycleDispatchToken();
+        long incarnationId = lifecycleToken != null
+                ? MessageLifecycleSupport.listeners().allocateMessageIncarnationId(lifecycleToken)
+                : 0L;
+        MessageLifecycleSupport.initialize(sourceMessage, lifecycleToken, incarnationId,
+                sourceConnector, ExecutionMode.SYNCHRONOUS);
+        if (lifecycleState != null) {
+            lifecycleState.sourceMessage = sourceMessage;
+        }
+        if (MessageLifecycleSupport.isEnabled(sourceMessage)) {
+            MessageInfo sourceInfo = MessageLifecycleSupport.snapshot(sourceMessage);
+            if (sourceInfo != null) {
+                MessageLifecycleSupport.listeners().onSourceMessageCreated(lifecycleToken,
+                        sourceInfo);
+            }
+        }
+
+        if (overwrite) {
             Set<Integer> metaDataIds = new HashSet<Integer>();
 
             if (rawMessage.getDestinationMetaDataIds() != null) {
@@ -1438,25 +1587,18 @@ public class Channel implements Runnable {
             dao.deleteMessageAttachments(channelId, messageId);
             dao.deleteConnectorMessages(channelId, messageId, metaDataIds);
             dao.resetMessage(channelId, messageId);
-            receivedDate = Calendar.getInstance();
         } else {
-            messageId = dao.getNextMessageId(channelId);
-            receivedDate = Calendar.getInstance();
-
             Message message = new Message();
             message.setMessageId(messageId);
             message.setChannelId(channelId);
+            message.setChannelName(name);
             message.setServerId(serverId);
             message.setReceivedDate(receivedDate);
             message.setOriginalId(rawMessage.getOriginalMessageId());
+            MessageLifecycleSupport.initialize(message, lifecycleToken, incarnationId);
 
             dao.insertMessage(message);
         }
-
-        ConnectorMessage sourceMessage = new ConnectorMessage(channelId, name, messageId, 0, serverId, receivedDate, Status.RECEIVED);
-        sourceMessage.setConnectorName(sourceConnector.getSourceName());
-        sourceMessage.setChainId(0);
-        sourceMessage.setOrderId(0);
 
         sourceMessage.setRaw(new MessageContent(channelId, messageId, 0, ContentType.RAW, null, sourceConnector.getInboundDataType().getType(), false));
 
@@ -1531,7 +1673,7 @@ public class Channel implements Runnable {
 
                 sourceMessage.getRaw().setContent(replacedMessage);
             } catch (AttachmentException e) {
-                eventDispatcher.dispatchEvent(new ErrorEvent(channelId, null, messageId, ErrorEventType.ATTACHMENT_HANDLER, null, null, "Error processing attachments for channel " + channelId + ".", e));
+                eventDispatcher.dispatchEvent(new ErrorEvent(channelId, 0, messageId, ErrorEventType.ATTACHMENT_HANDLER, sourceConnector.getSourceName(), sourceConnector.getLifecycleConnectorType(), "Error processing attachments for channel " + channelId + ".", e, sourceMessage.getMessageIncarnationId()));
                 logger.error("Error processing attachments for channel " + name + " (" + channelId + ").", e);
                 throw new ChannelException(false, e);
             }
@@ -1613,6 +1755,45 @@ public class Channel implements Runnable {
      * @throws InterruptedException
      */
     protected Message process(ConnectorMessage sourceMessage, boolean markAsProcessed) throws InterruptedException {
+        if (sourceMessage.getLifecycleDispatchToken() == null) {
+            MessageLifecycleSupport.initializeRecovered(sourceMessage, sourceConnector,
+                    ExecutionMode.RECOVERY);
+        }
+        if (!MessageLifecycleSupport.isEnabled(sourceMessage)) {
+            return processMessage(sourceMessage, markAsProcessed);
+        }
+
+        MessageInfo messageInfo = MessageLifecycleSupport.snapshot(sourceMessage);
+        HandoffBundle handoff = sourceMessage.takeLifecycleHandoffBundle();
+        if (messageInfo == null) {
+            if (handoff != null) {
+                MessageLifecycleSupport.listeners().cancelHandoffs(handoff,
+                        HandoffCancellationReason.TRANSFER_FAILED);
+            }
+            return processMessage(sourceMessage, markAsProcessed);
+        }
+
+        ExecutionMode executionMode = sourceMessage.getLifecycleExecutionMode() != null
+                ? sourceMessage.getLifecycleExecutionMode() : ExecutionMode.SYNCHRONOUS;
+        ProcessInfo processInfo = new ProcessInfo(messageInfo, executionMode);
+        LifecycleHandle lifecycleHandle = handoff != null
+                ? MessageLifecycleSupport.listeners().onProcessStart(processInfo, handoff)
+                : MessageLifecycleSupport.listeners().onProcessStart(
+                        sourceMessage.getLifecycleDispatchToken(), processInfo);
+        Throwable lifecycleFailure = null;
+        sourceMessage.setLifecycleRolledBack(false);
+        try {
+            return processMessage(sourceMessage, markAsProcessed);
+        } catch (Throwable t) {
+            lifecycleFailure = t;
+            throw t;
+        } finally {
+            lifecycleHandle.end(MessageLifecycleSupport.result(sourceMessage, lifecycleFailure,
+                    sourceMessage.isLifecycleRolledBack(), null, FailureCategory.UNKNOWN));
+        }
+    }
+
+    private Message processMessage(ConnectorMessage sourceMessage, boolean markAsProcessed) throws InterruptedException {
         ThreadUtils.checkInterruptedStatus();
         long messageId = sourceMessage.getMessageId();
 
@@ -1625,7 +1806,10 @@ public class Channel implements Runnable {
         finalMessage.setMessageId(messageId);
         finalMessage.setServerId(serverId);
         finalMessage.setChannelId(channelId);
+        finalMessage.setChannelName(name);
         finalMessage.setReceivedDate(sourceMessage.getReceivedDate());
+        MessageLifecycleSupport.initialize(finalMessage,
+                sourceMessage.getLifecycleDispatchToken(), sourceMessage.getMessageIncarnationId());
         finalMessage.getConnectorMessages().put(0, sourceMessage);
 
         // run the raw message through the pre-processor script
@@ -1637,6 +1821,8 @@ public class Channel implements Runnable {
             processedRawContent = preProcessor.doPreProcess(sourceMessage);
         } catch (DonkeyException e) {
             sourceMessage.setStatus(Status.ERROR);
+            sourceMessage.setLifecycleFailureInfo(MessageLifecycleSupport.failure(
+                    FailureCategory.PREPROCESSOR, e));
             sourceMessage.setProcessingError(e.getFormattedError());
         }
 
@@ -1651,7 +1837,8 @@ public class Channel implements Runnable {
 
         try {
             if (sourceMessage.getStatus() == Status.ERROR) {
-                dao.updateStatus(sourceMessage, Status.RECEIVED);
+                MessageLifecycleSupport.updateStatus(dao, sourceMessage, Status.RECEIVED,
+                        Status.ERROR, sourceMessage.getLifecycleFailureInfo());
 
                 if (StringUtils.isNotBlank(sourceMessage.getProcessingError())) {
                     dao.updateErrors(sourceMessage);
@@ -1675,14 +1862,20 @@ public class Channel implements Runnable {
                 sourceConnector.getFilterTransformerExecutor().processConnectorMessage(sourceMessage);
             } catch (DonkeyException e) {
                 if (e instanceof MessageSerializerException) {
-                    eventDispatcher.dispatchEvent(new ErrorEvent(channelId, 0, messageId, ErrorEventType.SERIALIZER, sourceConnector.getSourceName(), null, e.getMessage(), e));
+                    eventDispatcher.dispatchEvent(new ErrorEvent(channelId, 0, messageId, ErrorEventType.SERIALIZER, sourceConnector.getSourceName(), sourceConnector.getLifecycleConnectorType(), e.getMessage(), e, sourceMessage.getMessageIncarnationId()));
                 }
 
                 sourceMessage.setStatus(Status.ERROR);
+                sourceMessage.setLifecycleFailureInfo(MessageLifecycleSupport.failure(
+                        e instanceof MessageSerializerException ? FailureCategory.SERIALIZER
+                                : MessageLifecycleSupport.failureCategory(e,
+                                        FailureCategory.TRANSFORMER),
+                        e));
                 sourceMessage.setProcessingError(e.getFormattedError());
             }
 
-            dao.updateStatus(sourceMessage, Status.RECEIVED);
+            MessageLifecycleSupport.updateStatus(dao, sourceMessage, Status.RECEIVED,
+                    sourceMessage.getStatus(), sourceMessage.getLifecycleFailureInfo());
 
             // Set the source connector's custom column map
             sourceConnector.getMetaDataReplacer().setMetaDataMap(sourceMessage, metaDataColumns);
@@ -1793,6 +1986,7 @@ public class Channel implements Runnable {
                     message.setConnectorName(destinationConnector.getDestinationName());
                     message.setChainId(chainProvider.getChainId());
                     message.setOrderId(destinationConnector.getOrderId());
+                    MessageLifecycleSupport.copy(sourceMessage, message, destinationConnector);
 
                     // We don't create a new map here because the source map is read-only and thus won't ever be changed
                     message.setSourceMap(sourceMessage.getSourceMap());
@@ -1831,13 +2025,25 @@ public class Channel implements Runnable {
                 List<Future<List<ConnectorMessage>>> destinationChainTasks = new ArrayList<Future<List<ConnectorMessage>>>();
 
                 for (int i = 0; i <= enabledChains.size() - 2; i++) {
+                    DestinationChain chain = enabledChains.get(i);
+                    chain.setName("Destination Chain Thread " + (i + 1) + " on " + name + " (" + channelId + ")");
+                    ConnectorMessage chainMessage = destinationMessages.get(
+                            chain.getEnabledMetaDataIds().get(0));
+                    HandoffBundle chainHandoff = MessageLifecycleSupport.createHandoff(
+                            chainMessage, HandoffKind.ASYNC_CHAIN);
+                    chain.setLifecycle(ExecutionMode.ASYNC_CHAIN, chainHandoff);
+                    DestinationChainFuture task = new DestinationChainFuture(chain);
                     try {
-                        DestinationChain chain = enabledChains.get(i);
-                        chain.setName("Destination Chain Thread " + (i + 1) + " on " + name + " (" + channelId + ")");
-                        destinationChainTasks.add(channelExecutor.submit(chain));
+                        channelExecutor.execute(task);
+                        destinationChainTasks.add(task);
                     } catch (RejectedExecutionException e) {
+                        chain.cancelLifecycleHandoff(
+                                HandoffCancellationReason.SUBMISSION_REJECTED);
                         Thread.currentThread().interrupt();
                         throw new InterruptedException();
+                    } catch (Throwable t) {
+                        chain.cancelLifecycleHandoff(HandoffCancellationReason.TRANSFER_FAILED);
+                        throw t;
                     }
                 }
 
@@ -1847,6 +2053,7 @@ public class Channel implements Runnable {
                 try {
                     DestinationChain chain = enabledChains.get(enabledChains.size() - 1);
                     chain.setName("Destination Chain Thread " + enabledChains.size() + " on " + name + " (" + channelId + ")");
+                    chain.setLifecycle(ExecutionMode.SYNCHRONOUS, null);
                     connectorMessages = chain.call();
                 } catch (Throwable t) {
                     handleDestinationChainThrowable(t);
@@ -1871,9 +2078,10 @@ public class Channel implements Runnable {
             finishMessage(finalMessage, markAsProcessed);
             return finalMessage;
         } finally {
-            if (!dao.isClosed()) {
+            if (dao != null && !dao.isClosed()) {
                 if (dao != null) {
                     if (!commitSuccess) {
+                        sourceMessage.setLifecycleRolledBack(true);
                         try {
                             dao.rollback();
                         } catch (Exception e) {}
@@ -1881,6 +2089,23 @@ public class Channel implements Runnable {
                 }  
                 dao.close();
             }
+        }
+    }
+
+    private static final class DestinationChainFuture
+            extends FutureTask<List<ConnectorMessage>> {
+        private final DestinationChain chain;
+
+        private DestinationChainFuture(DestinationChain chain) {
+            super(chain);
+            this.chain = chain;
+        }
+
+        @Override
+        protected void done() {
+            chain.cancelLifecycleHandoff(isCancelled()
+                    ? HandoffCancellationReason.CANCELLED
+                    : HandoffCancellationReason.TRANSFER_FAILED);
         }
     }
 
@@ -1907,6 +2132,8 @@ public class Channel implements Runnable {
             cause = t;
         }
 
+        MessageLifecycleSupport.throwIfFatal(cause);
+
         // TODO: make sure we are catching out of memory errors correctly here
         if (cause.getMessage() != null && cause.getMessage().contains("Java heap space")) {
             logger.error(cause.getMessage(), cause);
@@ -1915,7 +2142,9 @@ public class Channel implements Runnable {
 
         if (cause instanceof CancellationException) {
             Thread.currentThread().interrupt();
-            throw new InterruptedException();
+            InterruptedException cancellation = new InterruptedException();
+            cancellation.initCause(cause);
+            throw cancellation;
         } else if (cause instanceof InterruptedException) {
             Thread.currentThread().interrupt();
             throw (InterruptedException) cause;
@@ -1945,6 +2174,7 @@ public class Channel implements Runnable {
     public void processSourceQueue(int timeout) throws InterruptedException {
         ThreadUtils.checkInterruptedStatus();
         ConnectorMessage sourceMessage = sourceQueue.poll(timeout, TimeUnit.MILLISECONDS);
+        initializeSourceQueueLifecycle(sourceMessage);
 
         try {
             while (sourceMessage != null && !stopSourceQueue) {
@@ -1952,19 +2182,22 @@ public class Channel implements Runnable {
                     process(sourceMessage, true);
                     sourceQueue.finish(sourceMessage);
                 } catch (Throwable t) {
+                    MessageLifecycleSupport.throwIfFatal(t);
                     // Just throw immediately if interrupted
                     ThreadUtils.checkInterruptedException(t);
 
                     logger.error("An error occurred in channel " + name + " (" + channelId + ") while processing message ID " + sourceMessage.getMessageId() + " from the source queue", t);
-                    eventDispatcher.dispatchEvent(new ErrorEvent(channelId, 0, sourceMessage.getMessageId(), ErrorEventType.SOURCE_CONNECTOR, sourceConnector.getSourceName(), null, t.getMessage(), t));
+                    eventDispatcher.dispatchEvent(new ErrorEvent(channelId, 0, sourceMessage.getMessageId(), ErrorEventType.SOURCE_CONNECTOR, sourceConnector.getSourceName(), sourceConnector.getLifecycleConnectorType(), t.getMessage(), t, sourceMessage.getMessageIncarnationId()));
                     sourceQueue.finish(sourceMessage);
                     sourceQueue.invalidate(false, false);
                     Thread.sleep(Constants.SOURCE_QUEUE_ERROR_SLEEP_TIME);
                 }
 
                 sourceMessage = sourceQueue.poll();
+                initializeSourceQueueLifecycle(sourceMessage);
             }
         } catch (Throwable t) {
+            MessageLifecycleSupport.throwIfFatal(t);
             // Just throw immediately if interrupted
             ThreadUtils.checkInterruptedException(t);
 
@@ -1973,8 +2206,58 @@ public class Channel implements Runnable {
             Thread.sleep(Constants.SOURCE_QUEUE_ERROR_SLEEP_TIME);
         } finally {
             if (sourceMessage != null) {
+                HandoffBundle handoff = sourceMessage.takeLifecycleHandoffBundle();
+                if (handoff != null) {
+                    MessageLifecycleSupport.listeners().cancelHandoffs(handoff,
+                            Thread.currentThread().isInterrupted()
+                                    ? HandoffCancellationReason.INTERRUPTED
+                                    : HandoffCancellationReason.SHUTDOWN);
+                }
                 sourceQueue.finish(sourceMessage);
             }
+        }
+    }
+
+    private void initializeSourceQueueLifecycle(ConnectorMessage sourceMessage) {
+        if (sourceMessage == null) {
+            return;
+        }
+        if (sourceMessage.getLifecycleDispatchToken() == null) {
+            MessageLifecycleSupport.initializeRecovered(sourceMessage, sourceConnector,
+                    ExecutionMode.PERSISTED_QUEUE_REFILL);
+        } else {
+            sourceMessage.setLifecycleExecutionMode(ExecutionMode.SOURCE_QUEUE);
+        }
+    }
+
+    void initializeRecoveryLifecycle(ConnectorMessage connectorMessage) {
+        if (connectorMessage == null || connectorMessage.getLifecycleDispatchToken() != null) {
+            return;
+        }
+        Connector connector = connectorMessage.getMetaDataId() == 0 ? sourceConnector
+                : getDestinationConnector(connectorMessage.getMetaDataId());
+        LifecycleDispatchToken token = MessageLifecycleSupport.listeners().captureToken();
+        long incarnationId = MessageLifecycleSupport.listeners()
+                .allocateMessageIncarnationId(token);
+        MessageLifecycleSupport.initialize(connectorMessage, token, incarnationId,
+                connector != null ? connector.getLifecycleConnectorType() : "",
+                ExecutionMode.RECOVERY);
+    }
+
+    void initializeRecoveryLifecycle(Message message) {
+        if (message == null || message.getLifecycleDispatchToken() != null) {
+            return;
+        }
+        LifecycleDispatchToken token = MessageLifecycleSupport.listeners().captureToken();
+        long incarnationId = MessageLifecycleSupport.listeners()
+                .allocateMessageIncarnationId(token);
+        MessageLifecycleSupport.initialize(message, token, incarnationId);
+        for (ConnectorMessage connectorMessage : message.getConnectorMessages().values()) {
+            Connector connector = connectorMessage.getMetaDataId() == 0 ? sourceConnector
+                    : getDestinationConnector(connectorMessage.getMetaDataId());
+            MessageLifecycleSupport.initialize(connectorMessage, token, incarnationId,
+                    connector != null ? connector.getLifecycleConnectorType() : "",
+                    ExecutionMode.RECOVERY);
         }
     }
 
@@ -1988,6 +2271,8 @@ public class Channel implements Runnable {
             response = postProcessor.doPostProcess(finalMessage);
         } catch (DonkeyException e) {
             sourceConnectorMessage.setPostProcessorError(e.getFormattedError());
+            sourceConnectorMessage.setLifecycleFailureInfo(MessageLifecycleSupport.failure(
+                    FailureCategory.POSTPROCESSOR, e));
             storePostProcessorError = true;
         }
 

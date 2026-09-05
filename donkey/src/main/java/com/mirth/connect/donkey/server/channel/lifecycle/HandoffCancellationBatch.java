@@ -39,6 +39,13 @@ public final class HandoffCancellationBatch {
         return entries.length == 0;
     }
 
+    /** Idempotently delivers this batch through the registry that created it. */
+    public void deliver() {
+        if (owner != null) {
+            owner.deliverHandoffCancellations(this);
+        }
+    }
+
     boolean belongsTo(MessageLifecycleListeners listeners) {
         return owner == null || owner == listeners;
     }

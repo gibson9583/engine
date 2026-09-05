@@ -254,7 +254,7 @@ public class SmtpDispatcher extends DestinationConnector {
             responseStatus = Status.SENT;
             responseStatusMessage = "Email sent successfully.";
         } catch (Exception e) {
-            eventController.dispatchEvent(new ErrorEvent(getChannelId(), getMetaDataId(), connectorMessage.getMessageId(), ErrorEventType.DESTINATION_CONNECTOR, getDestinationName(), connectorProperties.getName(), "Error sending email message", e));
+            eventController.dispatchEvent(new ErrorEvent(getChannelId(), getMetaDataId(), connectorMessage.getMessageId(), ErrorEventType.DESTINATION_CONNECTOR, getDestinationName(), connectorProperties.getName(), "Error sending email message", e, connectorMessage.getMessageIncarnationId()));
             responseStatusMessage = ErrorMessageBuilder.buildErrorResponse("Error sending email message", e);
             responseError = ErrorMessageBuilder.buildErrorMessage(connectorProperties.getName(), "Error sending email message", e);
 

@@ -162,19 +162,28 @@ public class MessageLifecycleApiTest {
 
         HandoffInfo chain = new HandoffInfo(HandoffKind.ASYNC_CHAIN, received, 1, null);
         assertEquals(Integer.valueOf(1), chain.getChainId());
-        HandoffInfo queue = new HandoffInfo(HandoffKind.DESTINATION_QUEUE, received, null, 1);
-        assertEquals(Integer.valueOf(1), queue.getNextSendAttempt());
+        HandoffInfo queue = new HandoffInfo(HandoffKind.DESTINATION_QUEUE, received, null, 1L);
+        assertEquals(Long.valueOf(1L), queue.getNextSendAttempt());
         assertEquals(1,
                 new QueueInfo(received, ExecutionMode.DESTINATION_QUEUE, 1).getNextSendAttempt());
         assertEquals(1, new SendInfo(received, ExecutionMode.SYNCHRONOUS, 1).getAttempt());
+        MessageInfo exhausted = new MessageInfo("server", "channel", "Channel", 7, 1,
+                "destination", "HTTP Sender", 11, 1, Status.QUEUED, Integer.MAX_VALUE,
+                100L, null, null);
+        long overflowSafeAttempt = (long) Integer.MAX_VALUE + 1L;
+        assertEquals(overflowSafeAttempt, new QueueInfo(exhausted,
+                ExecutionMode.DESTINATION_QUEUE, overflowSafeAttempt).getNextSendAttempt());
+        assertEquals(Long.valueOf(overflowSafeAttempt), new HandoffInfo(
+                HandoffKind.DESTINATION_QUEUE, exhausted, null, overflowSafeAttempt)
+                        .getNextSendAttempt());
         expectIllegalArgument(
                 () -> new HandoffInfo(HandoffKind.SOURCE_QUEUE, received, null, null));
         expectIllegalArgument(
                 () -> new HandoffInfo(HandoffKind.ASYNC_CHAIN, received, 2, null));
         expectIllegalArgument(
-                () -> new HandoffInfo(HandoffKind.DESTINATION_QUEUE, received, null, 0));
+                () -> new HandoffInfo(HandoffKind.DESTINATION_QUEUE, received, null, 0L));
         expectIllegalArgument(
-                () -> new HandoffInfo(HandoffKind.DESTINATION_QUEUE, received, null, 2));
+                () -> new HandoffInfo(HandoffKind.DESTINATION_QUEUE, received, null, 2L));
         expectIllegalArgument(
                 () -> new QueueInfo(received, ExecutionMode.DESTINATION_QUEUE, 2));
         expectIllegalArgument(() -> new SendInfo(received, ExecutionMode.SYNCHRONOUS, 2));

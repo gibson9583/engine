@@ -1132,6 +1132,13 @@ public class DonkeyEngineController implements EngineController {
                 throw new BatchMessageException("Batch processing is not supported for binary data.");
             } else {
                 BatchRawMessage batchRawMessage = new BatchRawMessage(new BatchMessageReader(rawMessage.getRawData()), rawMessage.getSourceMap());
+                batchRawMessage.setLifecycleDispatchToken(rawMessage.getLifecycleDispatchToken());
+                if (rawMessage.getLifecycleDispatchToken() != null
+                        && !rawMessage.getLifecycleDispatchToken().isEmpty()) {
+                    batchRawMessage.setInboundParentState(rawMessage.getInboundParentState());
+                    batchRawMessage.setInboundTraceParent(rawMessage.getInboundTraceParent());
+                    batchRawMessage.setMessageLineage(rawMessage.getMessageLineage());
+                }
 
                 ResponseHandler responseHandler = new SimpleResponseHandler();
                 sourceConnector.dispatchBatchMessage(batchRawMessage, responseHandler, rawMessage.getDestinationMetaDataIds());

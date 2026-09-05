@@ -708,6 +708,34 @@ public class MessageLifecycleListenersTest {
     }
 
     @Test
+    public void cancellationCarrierRoutesThroughItsCreatingRegistry() {
+        MessageLifecycleListeners listeners = new MessageLifecycleListeners();
+        AtomicInteger cancellations = new AtomicInteger();
+        listeners.register(new MessageLifecycleListener() {
+            @Override
+            public HandoffReceipt onHandoffCreated(HandoffInfo handoff) {
+                return HandoffReceipt.NOOP;
+            }
+
+            @Override
+            public void onHandoffCancelled(HandoffCancellation cancellation,
+                    HandoffReceipt receipt) {
+                cancellations.incrementAndGet();
+            }
+        });
+        HandoffBundle bundle = listeners.createHandoffs(listeners.captureToken(),
+                sourceHandoff(sourceMessage(0)));
+
+        HandoffCancellationBatch batch =
+                bundle.claimCancellation(HandoffCancellationReason.REMOVED);
+        assertEquals(0, cancellations.get());
+        batch.deliver();
+        batch.deliver();
+
+        assertEquals(1, cancellations.get());
+    }
+
+    @Test
     public void nullAndThrowingHandoffCreationBecomeNoopWithoutBlockingSibling() {
         MessageLifecycleListeners listeners = new MessageLifecycleListeners();
         List<HandoffReceipt> received = new ArrayList<HandoffReceipt>();

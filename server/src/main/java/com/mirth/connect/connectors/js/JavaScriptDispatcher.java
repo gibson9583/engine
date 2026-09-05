@@ -211,7 +211,7 @@ public class JavaScriptDispatcher extends DestinationConnector {
             return response;
         } catch (Exception e) {
             logger.error("Error executing script (" + connectorProperties.getName() + " \"" + getDestinationName() + "\" on channel " + getChannelId() + ").", e);
-            eventController.dispatchEvent(new ErrorEvent(getChannelId(), getMetaDataId(), message.getMessageId(), ErrorEventType.DESTINATION_CONNECTOR, getDestinationName(), connectorProperties.getName(), "Error executing script", e));
+            eventController.dispatchEvent(new ErrorEvent(getChannelId(), getMetaDataId(), message.getMessageId(), ErrorEventType.DESTINATION_CONNECTOR, getDestinationName(), connectorProperties.getName(), "Error executing script", e, message.getMessageIncarnationId()));
             return new Response(Status.ERROR, null, ErrorMessageBuilder.buildErrorResponse("Error executing script", e), ErrorMessageBuilder.buildErrorMessage(connectorProperties.getName(), "Error executing script", e));
         } finally {
             eventController.dispatchEvent(new ConnectionStatusEvent(getChannelId(), getMetaDataId(), getDestinationName(), ConnectionStatusEventType.IDLE));
@@ -241,7 +241,7 @@ public class JavaScriptDispatcher extends DestinationConnector {
                 responseStatus = Status.ERROR;
 
                 logger.error("Script not found in cache (" + connectorProperties.getName() + " \"" + getDestinationName() + "\" on channel " + getChannelId() + ").");
-                eventController.dispatchEvent(new ErrorEvent(getChannelId(), getMetaDataId(), message.getMessageId(), ErrorEventType.DESTINATION_CONNECTOR, getDestinationName(), connectorProperties.getName(), "Script not found in cache", null));
+                eventController.dispatchEvent(new ErrorEvent(getChannelId(), getMetaDataId(), message.getMessageId(), ErrorEventType.DESTINATION_CONNECTOR, getDestinationName(), connectorProperties.getName(), "Script not found in cache", null, message.getMessageIncarnationId()));
             } else {
                 try {
                     Scriptable scope = JavaScriptScopeUtil.getMessageDispatcherScope(getContextFactory(), scriptLogger, getChannelId(), new ImmutableConnectorMessage(message, true, JavaScriptDispatcher.this.getDestinationIdMap()));
@@ -303,7 +303,7 @@ public class JavaScriptDispatcher extends DestinationConnector {
                     responseStatus = Status.ERROR;
 
                     logger.error("Error evaluating " + getConnectorProperties().getName() + " (" + connectorProperties.getName() + " \"" + getDestinationName() + "\" on channel " + getChannelId() + ").", t);
-                    eventController.dispatchEvent(new ErrorEvent(getChannelId(), getMetaDataId(), message.getMessageId(), ErrorEventType.DESTINATION_CONNECTOR, getDestinationName(), connectorProperties.getName(), "Error evaluating " + getConnectorProperties().getName(), t));
+                    eventController.dispatchEvent(new ErrorEvent(getChannelId(), getMetaDataId(), message.getMessageId(), ErrorEventType.DESTINATION_CONNECTOR, getDestinationName(), connectorProperties.getName(), "Error evaluating " + getConnectorProperties().getName(), t, message.getMessageIncarnationId()));
                 } finally {
                     Context.exit();
                 }

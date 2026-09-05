@@ -22,8 +22,16 @@ public class ErrorEvent extends Event {
     private String connectorType;
     private String customMessage;
     private Throwable throwable;
+    private long messageIncarnationId;
 
     public ErrorEvent(String channelId, Integer metaDataId, Long messageId, ErrorEventType type, String connectorName, String connectorType, String customMessage, Throwable throwable) {
+        this(channelId, metaDataId, messageId, type, connectorName, connectorType, customMessage,
+                throwable, 0L);
+    }
+
+    public ErrorEvent(String channelId, Integer metaDataId, Long messageId, ErrorEventType type,
+            String connectorName, String connectorType, String customMessage, Throwable throwable,
+            long messageIncarnationId) {
         this.channelId = channelId;
         this.metaDataId = metaDataId;
         this.messageId = messageId;
@@ -32,6 +40,7 @@ public class ErrorEvent extends Event {
         this.connectorType = connectorType;
         this.customMessage = customMessage;
         this.throwable = throwable;
+        setMessageIncarnationId(messageIncarnationId);
     }
 
     public Integer getMetaDataId() {
@@ -96,5 +105,16 @@ public class ErrorEvent extends Event {
 
     public void setThrowable(Throwable throwable) {
         this.throwable = throwable;
+    }
+
+    public long getMessageIncarnationId() {
+        return messageIncarnationId;
+    }
+
+    public void setMessageIncarnationId(long messageIncarnationId) {
+        if (messageIncarnationId < 0L) {
+            throw new IllegalArgumentException("messageIncarnationId must not be negative");
+        }
+        this.messageIncarnationId = messageIncarnationId;
     }
 }

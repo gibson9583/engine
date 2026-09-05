@@ -111,6 +111,13 @@ public abstract class Connector {
         this.connectorProperties = connectorProperties;
     }
 
+    public String getLifecycleConnectorType() {
+        if (connectorProperties != null && connectorProperties.getName() != null) {
+            return connectorProperties.getName();
+        }
+        return getClass().getName();
+    }
+
     public Map<String, Integer> getDestinationIdMap() {
         return destinationIdMap;
     }

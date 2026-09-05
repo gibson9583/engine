@@ -90,9 +90,14 @@ import com.mirth.connect.donkey.model.message.Response;
 import com.mirth.connect.donkey.model.message.Status;
 import com.mirth.connect.donkey.model.message.attachment.Attachment;
 import com.mirth.connect.donkey.server.ConnectorTaskException;
+import com.mirth.connect.donkey.server.Donkey;
 import com.mirth.connect.donkey.server.channel.ChannelException;
 import com.mirth.connect.donkey.server.channel.DispatchResult;
 import com.mirth.connect.donkey.server.channel.SourceConnector;
+import com.mirth.connect.donkey.server.channel.lifecycle.InboundParentState;
+import com.mirth.connect.donkey.server.channel.lifecycle.InboundTraceParent;
+import com.mirth.connect.donkey.server.channel.lifecycle.LifecycleDispatchToken;
+import com.mirth.connect.donkey.server.channel.lifecycle.MessageLifecycleListeners;
 import com.mirth.connect.donkey.server.event.ConnectionStatusEvent;
 import com.mirth.connect.donkey.server.event.ErrorEvent;
 import com.mirth.connect.donkey.server.message.batch.BatchMessageException;
@@ -121,6 +126,8 @@ import com.mirth.connect.util.CharsetUtils;
 import com.mirth.connect.util.HttpUtil;
 
 public class HttpReceiver extends SourceConnector implements BinaryContentTypeResolver {
+    private static final MessageLifecycleListeners EMPTY_LIFECYCLE_LISTENERS =
+            new MessageLifecycleListeners();
     private Logger logger = LogManager.getLogger(this.getClass());
     private ConfigurationController configurationController = ControllerFactory.getFactory().createConfigurationController();
     private EventController eventController = ControllerFactory.getFactory().createEventController();
@@ -353,6 +360,13 @@ public class HttpReceiver extends SourceConnector implements BinaryContentTypeRe
             eventController.dispatchEvent(new ConnectionStatusEvent(getChannelId(), getMetaDataId(), getSourceName(), ConnectionStatusEventType.CONNECTED));
             DispatchResult dispatchResult = null;
             String originalThreadName = Thread.currentThread().getName();
+            MessageLifecycleListeners lifecycleListeners = Donkey.getInstance()
+                    .getMessageLifecycleListeners();
+            LifecycleDispatchToken lifecycleToken = lifecycleListeners != null
+                    ? lifecycleListeners.captureToken()
+                    : EMPTY_LIFECYCLE_LISTENERS.captureToken();
+            TraceParentSelection traceParent = lifecycleToken.isEmpty() ? null
+                    : selectTraceParent(servletRequest);
 
             try {
                 Thread.currentThread().setName("HTTP Receiver Thread on " + getChannel().getName() + " (" + getChannelId() + ") < " + originalThreadName);
@@ -375,6 +389,11 @@ public class HttpReceiver extends SourceConnector implements BinaryContentTypeRe
                         } else {
                             try {
                                 BatchRawMessage batchRawMessage = new BatchRawMessage(new BatchMessageReader((String) messageContent), sourceMap, attachments);
+                                batchRawMessage.setLifecycleDispatchToken(lifecycleToken);
+                                if (!lifecycleToken.isEmpty()) {
+                                    batchRawMessage.setInboundParentState(traceParent.state);
+                                    batchRawMessage.setInboundTraceParent(traceParent.parent);
+                                }
                                 ResponseHandler responseHandler = new SimpleResponseHandler();
 
                                 dispatchBatchMessage(batchRawMessage, responseHandler);
@@ -382,6 +401,7 @@ public class HttpReceiver extends SourceConnector implements BinaryContentTypeRe
                                 dispatchResult = responseHandler.getResultForResponse();
                                 sendResponse(baseRequest, servletResponse, dispatchResult);
                             } catch (Throwable t) {
+                                rethrowFatal(t);
                                 sendErrorResponse(baseRequest, servletResponse, dispatchResult, t);
                             }
                         }
@@ -394,10 +414,17 @@ public class HttpReceiver extends SourceConnector implements BinaryContentTypeRe
                                 rawMessage = new RawMessage((String) messageContent, null, sourceMap, attachments);
                             }
 
+                            rawMessage.setLifecycleDispatchToken(lifecycleToken);
+                            if (!lifecycleToken.isEmpty()) {
+                                rawMessage.setInboundParentState(traceParent.state);
+                                rawMessage.setInboundTraceParent(traceParent.parent);
+                            }
+
                             dispatchResult = dispatchRawMessage(rawMessage);
 
                             sendResponse(baseRequest, servletResponse, dispatchResult);
                         } catch (Throwable t) {
+                            rethrowFatal(t);
                             sendErrorResponse(baseRequest, servletResponse, dispatchResult, t);
                         } finally {
                             finishDispatch(dispatchResult);
@@ -409,6 +436,64 @@ public class HttpReceiver extends SourceConnector implements BinaryContentTypeRe
                 Thread.currentThread().setName(originalThreadName);
             }
             baseRequest.setHandled(true);
+        }
+    }
+
+    private static TraceParentSelection selectTraceParent(HttpServletRequest request) {
+        Enumeration<String> values = request.getHeaders("traceparent");
+        if (values == null || !values.hasMoreElements()) {
+            return new TraceParentSelection(InboundParentState.ABSENT, null);
+        }
+
+        String value = values.nextElement();
+        if (values.hasMoreElements() || !isVersionZeroTraceParent(value)) {
+            return new TraceParentSelection(InboundParentState.INVALID, null);
+        }
+
+        try {
+            InboundTraceParent parent = new InboundTraceParent(value.substring(3, 35),
+                    value.substring(36, 52), Integer.parseInt(value.substring(53, 55), 16));
+            return new TraceParentSelection(InboundParentState.VALID, parent);
+        } catch (IllegalArgumentException e) {
+            return new TraceParentSelection(InboundParentState.INVALID, null);
+        }
+    }
+
+    private static boolean isVersionZeroTraceParent(String value) {
+        if (value == null || value.length() != 55 || value.charAt(2) != '-'
+                || value.charAt(35) != '-' || value.charAt(52) != '-'
+                || value.charAt(0) != '0' || value.charAt(1) != '0') {
+            return false;
+        }
+        for (int i = 3; i < value.length(); i++) {
+            if (i == 35 || i == 52) {
+                continue;
+            }
+            char character = value.charAt(i);
+            if ((character < '0' || character > '9')
+                    && (character < 'a' || character > 'f')) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static void rethrowFatal(Throwable throwable) {
+        if (throwable instanceof VirtualMachineError) {
+            throw (VirtualMachineError) throwable;
+        }
+        if (throwable instanceof ThreadDeath) {
+            throw (ThreadDeath) throwable;
+        }
+    }
+
+    private static final class TraceParentSelection {
+        private final InboundParentState state;
+        private final InboundTraceParent parent;
+
+        private TraceParentSelection(InboundParentState state, InboundTraceParent parent) {
+            this.state = state;
+            this.parent = parent;
         }
     }
 
@@ -536,7 +621,7 @@ public class HttpReceiver extends SourceConnector implements BinaryContentTypeRe
     protected void sendErrorResponse(Request baseRequest, HttpServletResponse servletResponse, DispatchResult dispatchResult, Throwable t) throws IOException {
         String responseError = ExceptionUtils.getRootCauseMessage(t);
         logger.error("Error receiving message (" + getConnectorProperties().getName() + " \"Source\" on channel " + getChannelId() + ").", t);
-        eventController.dispatchEvent(new ErrorEvent(getChannelId(), getMetaDataId(), dispatchResult == null ? null : dispatchResult.getMessageId(), ErrorEventType.SOURCE_CONNECTOR, getSourceName(), getConnectorProperties().getName(), "Error receiving message", t));
+        eventController.dispatchEvent(new ErrorEvent(getChannelId(), getMetaDataId(), dispatchResult == null ? null : dispatchResult.getMessageId(), ErrorEventType.SOURCE_CONNECTOR, getSourceName(), getConnectorProperties().getName(), "Error receiving message", t, dispatchResult == null ? 0L : dispatchResult.getMessageIncarnationId()));
 
         if (dispatchResult != null) {
             // TODO decide if we still want to send back the exception content or something else?

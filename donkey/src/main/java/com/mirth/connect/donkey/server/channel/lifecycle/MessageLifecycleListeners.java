@@ -13,6 +13,7 @@ import java.util.Objects;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.LongSupplier;
 
 import org.apache.logging.log4j.LogManager;
@@ -40,6 +41,8 @@ public final class MessageLifecycleListeners {
     private final int quarantineThreshold;
     private final IdentityHashMap<MessageLifecycleListener, Boolean> retiringListeners =
             new IdentityHashMap<MessageLifecycleListener, Boolean>();
+    private final AtomicLong nextMessageIncarnationId = new AtomicLong(1L);
+    private final AtomicBoolean incarnationExhaustionReported = new AtomicBoolean(false);
     private volatile Registration[] registrations = EMPTY_REGISTRATIONS;
 
     public MessageLifecycleListeners() {
@@ -113,6 +116,28 @@ public final class MessageLifecycleListeners {
 
     public int getRegisteredListenerCount() {
         return registrations.length;
+    }
+
+    /** Allocates correlation identity only for a non-empty captured token. */
+    public long allocateMessageIncarnationId(LifecycleDispatchToken token) {
+        validateToken(token);
+        if (token.isEmpty()) {
+            return 0L;
+        }
+
+        while (true) {
+            long candidate = nextMessageIncarnationId.get();
+            if (candidate <= 0L || candidate == Long.MAX_VALUE) {
+                if (incarnationExhaustionReported.compareAndSet(false, true)) {
+                    LOGGER.error("Message lifecycle incarnation identifiers are exhausted; "
+                            + "new message correlation is disabled for this engine run.");
+                }
+                return 0L;
+            }
+            if (nextMessageIncarnationId.compareAndSet(candidate, candidate + 1L)) {
+                return candidate;
+            }
+        }
     }
 
     public LifecycleHandle onDispatchStart(LifecycleDispatchToken token, DispatchInfo dispatch) {

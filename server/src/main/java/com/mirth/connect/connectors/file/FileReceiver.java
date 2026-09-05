@@ -239,6 +239,12 @@ public class FileReceiver extends PollConnector {
                 processFiles(listFiles(readDir), pollId, pollSequenceId, true);
             }
         } catch (Throwable t) {
+            if (t instanceof VirtualMachineError) {
+                throw (VirtualMachineError) t;
+            }
+            if (t instanceof ThreadDeath) {
+                throw (ThreadDeath) t;
+            }
             eventController.dispatchEvent(new ErrorEvent(getChannelId(), getMetaDataId(), null, ErrorEventType.SOURCE_CONNECTOR, getSourceName(), connectorProperties.getName(), null, t));
             logger.error("Error polling in channel: " + getChannelId(), t);
         } finally {
@@ -430,6 +436,12 @@ public class FileReceiver extends PollConnector {
                     error = true;
                     logger.error("Unable to dispatch message to channel " + getChannelId() + ". File: " + file.getAbsolutePath(), e);
                 } catch (Throwable t) {
+                    if (t instanceof VirtualMachineError) {
+                        throw (VirtualMachineError) t;
+                    }
+                    if (t instanceof ThreadDeath) {
+                        throw (ThreadDeath) t;
+                    }
                     error = true;
                     String errorMessage = "Error reading file " + file.getAbsolutePath() + "\n" + t.getMessage();
                     logger.error(errorMessage);

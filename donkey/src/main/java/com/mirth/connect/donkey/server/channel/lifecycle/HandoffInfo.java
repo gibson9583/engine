@@ -12,10 +12,10 @@ public final class HandoffInfo {
     private final HandoffKind kind;
     private final MessageInfo message;
     private final Integer chainId;
-    private final Integer nextSendAttempt;
+    private final Long nextSendAttempt;
 
     public HandoffInfo(HandoffKind kind, MessageInfo message, Integer chainId,
-            Integer nextSendAttempt) {
+            Long nextSendAttempt) {
         this.kind = Objects.requireNonNull(kind, "kind");
         this.message = Objects.requireNonNull(message, "message");
         switch (kind) {
@@ -69,18 +69,18 @@ public final class HandoffInfo {
         return chainId;
     }
 
-    public Integer getNextSendAttempt() {
+    public Long getNextSendAttempt() {
         return nextSendAttempt;
     }
 
-    private static void requireAbsent(Integer chainId, Integer nextSendAttempt, String kind) {
+    private static void requireAbsent(Integer chainId, Long nextSendAttempt, String kind) {
         if (chainId != null || nextSendAttempt != null) {
             throw new IllegalArgumentException(kind + " handoff has no discriminator");
         }
     }
 
-    private static void requireNextAttempt(MessageInfo message, int nextSendAttempt) {
-        if ((long) nextSendAttempt != (long) message.getSendAttempts() + 1L) {
+    private static void requireNextAttempt(MessageInfo message, long nextSendAttempt) {
+        if (nextSendAttempt != (long) message.getSendAttempts() + 1L) {
             throw new IllegalArgumentException(
                     "nextSendAttempt must equal completed sendAttempts plus one");
         }

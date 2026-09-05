@@ -139,7 +139,7 @@ public class DocumentDispatcher extends DestinationConnector {
 
             responseStatus = Status.SENT;
         } catch (Exception e) {
-            eventController.dispatchEvent(new ErrorEvent(getChannelId(), getMetaDataId(), connectorMessage.getMessageId(), ErrorEventType.DESTINATION_CONNECTOR, getDestinationName(), connectorProperties.getName(), "Error writing document", e));
+            eventController.dispatchEvent(new ErrorEvent(getChannelId(), getMetaDataId(), connectorMessage.getMessageId(), ErrorEventType.DESTINATION_CONNECTOR, getDestinationName(), connectorProperties.getName(), "Error writing document", e, connectorMessage.getMessageIncarnationId()));
             responseStatusMessage = ErrorMessageBuilder.buildErrorResponse("Error writing document", e);
             responseError = ErrorMessageBuilder.buildErrorMessage(connectorProperties.getName(), "Error writing document", e);
 

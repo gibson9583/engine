@@ -15,6 +15,10 @@ import java.util.HashMap;
 import java.util.Map;
 
 import com.mirth.connect.donkey.model.channel.ConnectorProperties;
+import com.mirth.connect.donkey.server.channel.lifecycle.ExecutionMode;
+import com.mirth.connect.donkey.server.channel.lifecycle.FailureInfo;
+import com.mirth.connect.donkey.server.channel.lifecycle.HandoffBundle;
+import com.mirth.connect.donkey.server.channel.lifecycle.LifecycleDispatchToken;
 import com.thoughtworks.xstream.annotations.XStreamAlias;
 
 @XStreamAlias("connectorMessage")
@@ -54,6 +58,13 @@ public class ConnectorMessage implements Serializable {
     private transient Integer queueBucket;
     private transient boolean attemptedFirst;
     private transient long dispatcherId;
+    private transient LifecycleDispatchToken lifecycleDispatchToken;
+    private transient long messageIncarnationId;
+    private transient String lifecycleConnectorType;
+    private transient ExecutionMode lifecycleExecutionMode;
+    private transient HandoffBundle lifecycleHandoffBundle;
+    private transient FailureInfo lifecycleFailureInfo;
+    private transient boolean lifecycleRolledBack;
 
     public ConnectorMessage() {}
 
@@ -492,6 +503,68 @@ public class ConnectorMessage implements Serializable {
 
     public void setDispatcherId(long dispatcherId) {
         this.dispatcherId = dispatcherId;
+    }
+
+    public LifecycleDispatchToken getLifecycleDispatchToken() {
+        return lifecycleDispatchToken;
+    }
+
+    public void setLifecycleDispatchToken(LifecycleDispatchToken lifecycleDispatchToken) {
+        this.lifecycleDispatchToken = lifecycleDispatchToken;
+    }
+
+    public long getMessageIncarnationId() {
+        return messageIncarnationId;
+    }
+
+    public void setMessageIncarnationId(long messageIncarnationId) {
+        this.messageIncarnationId = messageIncarnationId;
+    }
+
+    public String getLifecycleConnectorType() {
+        return lifecycleConnectorType;
+    }
+
+    public void setLifecycleConnectorType(String lifecycleConnectorType) {
+        this.lifecycleConnectorType = lifecycleConnectorType;
+    }
+
+    public ExecutionMode getLifecycleExecutionMode() {
+        return lifecycleExecutionMode;
+    }
+
+    public void setLifecycleExecutionMode(ExecutionMode lifecycleExecutionMode) {
+        this.lifecycleExecutionMode = lifecycleExecutionMode;
+    }
+
+    public synchronized HandoffBundle getLifecycleHandoffBundle() {
+        return lifecycleHandoffBundle;
+    }
+
+    public synchronized void setLifecycleHandoffBundle(HandoffBundle lifecycleHandoffBundle) {
+        this.lifecycleHandoffBundle = lifecycleHandoffBundle;
+    }
+
+    public synchronized HandoffBundle takeLifecycleHandoffBundle() {
+        HandoffBundle bundle = lifecycleHandoffBundle;
+        lifecycleHandoffBundle = null;
+        return bundle;
+    }
+
+    public FailureInfo getLifecycleFailureInfo() {
+        return lifecycleFailureInfo;
+    }
+
+    public void setLifecycleFailureInfo(FailureInfo lifecycleFailureInfo) {
+        this.lifecycleFailureInfo = lifecycleFailureInfo;
+    }
+
+    public boolean isLifecycleRolledBack() {
+        return lifecycleRolledBack;
+    }
+
+    public void setLifecycleRolledBack(boolean lifecycleRolledBack) {
+        this.lifecycleRolledBack = lifecycleRolledBack;
     }
 
     public String toString() {

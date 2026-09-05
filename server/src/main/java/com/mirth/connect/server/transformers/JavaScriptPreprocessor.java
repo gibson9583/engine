@@ -130,7 +130,7 @@ public class JavaScriptPreprocessor implements PreProcessor {
                 t = e.getCause();
             }
 
-            eventController.dispatchEvent(new ErrorEvent(message.getChannelId(), null, message.getMessageId(), ErrorEventType.PREPROCESSOR_SCRIPT, null, null, "Error running preprocessor scripts", t));
+            eventController.dispatchEvent(new ErrorEvent(message.getChannelId(), 0, message.getMessageId(), ErrorEventType.PREPROCESSOR_SCRIPT, null, null, "Error running preprocessor scripts", t, message.getMessageIncarnationId()));
             throw new DonkeyException(t, ErrorMessageBuilder.buildErrorMessage(ErrorEventType.PREPROCESSOR_SCRIPT.toString(), "Error running preprocessor scripts", t));
         }
     }

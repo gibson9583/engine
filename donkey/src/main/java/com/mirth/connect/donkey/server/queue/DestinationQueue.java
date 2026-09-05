@@ -29,6 +29,9 @@ import com.mirth.connect.donkey.model.channel.DestinationConnectorPropertiesInte
 import com.mirth.connect.donkey.model.event.MessageEventType;
 import com.mirth.connect.donkey.model.message.ConnectorMessage;
 import com.mirth.connect.donkey.server.event.MessageEvent;
+import com.mirth.connect.donkey.server.channel.lifecycle.HandoffBundle;
+import com.mirth.connect.donkey.server.channel.lifecycle.HandoffCancellationBatch;
+import com.mirth.connect.donkey.server.channel.lifecycle.HandoffCancellationReason;
 import com.mirth.connect.donkey.util.MessageMaps;
 import com.mirth.connect.donkey.util.Serializer;
 import com.mirth.connect.donkey.util.xstream.SerializerException;
@@ -167,93 +170,170 @@ public class DestinationQueue extends ConnectorMessageQueue {
         return false;
     }
 
-    public synchronized ConnectorMessage acquire() {
+    public ConnectorMessage acquire() {
         ConnectorMessage connectorMessage = null;
+        boolean acquired = false;
+        List<HandoffCancellationBatch> cancellations = new ArrayList<HandoffCancellationBatch>();
 
-        if (size() - checkedOut.size() > 0) {
-            boolean bufferFilled = false;
+        try {
+            synchronized (this) {
+                if (size() - checkedOut.size() > 0) {
+                    boolean bufferFilled = false;
 
-            do {
-                if (size == null) {
-                    updateSize();
-                }
-
-                if (size > 0) {
-                    connectorMessage = pollFirstValue();
-
-                    /*
-                     * If connectorMessage is null, it may just mean that all the messages in the
-                     * buffer are in buckets for other queue threads. So only go to the database for
-                     * more messages and try again if the buffer is actually empty.
-                     */
-                    if (connectorMessage == null && buffer.size() == 0) {
-                        if (bufferFilled) {
-                            return null;
+                    do {
+                        if (size == null) {
+                            updateSize();
                         }
 
-                        fillBuffer();
-                        bufferFilled = true;
+                        if (size > 0) {
+                            connectorMessage = pollFirstValue();
 
-                        connectorMessage = pollFirstValue();
-                    }
+                            /*
+                             * A null value can mean every buffered item belongs to another queue
+                             * bucket. Refill only when the buffer itself is empty.
+                             */
+                            if (connectorMessage == null && buffer.size() == 0) {
+                                if (bufferFilled) {
+                                    break;
+                                }
 
-                    // if an element was found, decrement the overall count
-                    if (connectorMessage != null && rotate) {
-                        dataSource.setLastItem(connectorMessage);
-                    }
+                                cancellations.addAll(fillBufferLocked(
+                                        HandoffCancellationReason.REFILL_DISCARDED));
+                                bufferFilled = true;
+
+                                connectorMessage = pollFirstValue();
+                            }
+
+                            if (connectorMessage != null && rotate) {
+                                dataSource.setLastItem(connectorMessage);
+                            }
+                        }
+                        if (connectorMessage != null
+                                && checkedOut.contains(connectorMessage.getMessageId())) {
+                            claimHandoffLocked(connectorMessage.takeLifecycleHandoffBundle(),
+                                    HandoffCancellationReason.REFILL_DISCARDED, cancellations);
+                        }
+                    } while (connectorMessage != null
+                            && checkedOut.contains(connectorMessage.getMessageId()));
                 }
-            } while (connectorMessage != null && checkedOut.contains(connectorMessage.getMessageId()));
-        }
 
-        if (connectorMessage != null) {
-            checkedOut.add(connectorMessage.getMessageId());
+                if (connectorMessage != null) {
+                    checkedOut.add(connectorMessage.getMessageId());
+                }
+                acquired = true;
+            }
+        } finally {
+            if (!acquired && connectorMessage != null) {
+                synchronized (this) {
+                    checkedOut.remove(connectorMessage.getMessageId());
+                    claimHandoffLocked(connectorMessage.takeLifecycleHandoffBundle(),
+                            HandoffCancellationReason.TRANSFER_FAILED, cancellations);
+                }
+            }
+            deliverHandoffCancellations(cancellations);
         }
-
         return connectorMessage;
     }
 
-    public synchronized void release(ConnectorMessage connectorMessage, boolean finished) {
-        if (connectorMessage != null) {
-            if (size != null) {
-                Long messageId = connectorMessage.getMessageId();
+    public void release(ConnectorMessage connectorMessage, boolean finished) {
+        HandoffCancellationBatch[] cancellations = null;
+        try {
+            synchronized (this) {
+                cancellations = releaseWithHandoffLocked(connectorMessage, finished, null);
+            }
+        } finally {
+            deliverHandoffCancellations(cancellations);
+        }
+    }
+
+    /** Releases an acquired object and atomically attaches a continuation handoff if retained. */
+    public HandoffCancellationBatch[] releaseWithHandoffLocked(
+            ConnectorMessage connectorMessage, boolean finished, HandoffBundle handoff) {
+        if (!Thread.holdsLock(this)) {
+            throw new IllegalStateException("queue monitor must be held");
+        }
+        List<HandoffCancellationBatch> cancellations = new ArrayList<HandoffCancellationBatch>();
+        boolean handoffHandled = handoff == null;
+        try {
+            if (connectorMessage != null) {
+                if (size != null) {
+                    Long messageId = connectorMessage.getMessageId();
+
+                    if (finished) {
+                        decrementActualSize();
+
+                        ConnectorMessage removed = buffer.remove(messageId);
+                        if (removed != null && removed != connectorMessage) {
+                            claimHandoffLocked(removed.takeLifecycleHandoffBundle(),
+                                    HandoffCancellationReason.REMOVED, cancellations);
+                        }
+                    } else {
+                        if (buffer.containsKey(messageId)) {
+                            ConnectorMessage displaced = buffer.put(messageId, connectorMessage);
+                            if (displaced != null && displaced != connectorMessage) {
+                                claimHandoffLocked(displaced.takeLifecycleHandoffBundle(),
+                                        HandoffCancellationReason.DISPLACED, cancellations);
+                            }
+                        }
+
+                        dataSource.rotateQueue();
+                    }
+                }
+
+                HandoffBundle previous = connectorMessage.takeLifecycleHandoffBundle();
+                if (previous != null && previous != handoff) {
+                    claimHandoffLocked(previous, HandoffCancellationReason.REMOVED,
+                            cancellations);
+                }
+                if (!finished && buffer.get(connectorMessage.getMessageId()) == connectorMessage) {
+                    connectorMessage.setLifecycleHandoffBundle(handoff);
+                } else {
+                    claimHandoffLocked(handoff, finished ? HandoffCancellationReason.REMOVED
+                            : HandoffCancellationReason.PERSISTED_ONLY, cancellations);
+                }
+                handoffHandled = true;
+
+                checkedOut.remove(connectorMessage.getMessageId());
 
                 if (finished) {
-                    decrementActualSize();
-
-                    if (buffer.containsKey(messageId)) {
-                        buffer.remove(messageId);
-                    }
-                } else {
-                    if (buffer.containsKey(messageId)) {
-                        buffer.put(messageId, connectorMessage);
-                    }
-
-                    dataSource.rotateQueue();
+                    eventDispatcher.dispatchEvent(new MessageEvent(channelId, metaDataId,
+                            MessageEventType.QUEUED, (long) size(), true));
                 }
             }
-
-            checkedOut.remove(connectorMessage.getMessageId());
-
-            if (finished) {
-                eventDispatcher.dispatchEvent(new MessageEvent(channelId, metaDataId, MessageEventType.QUEUED, (long) size(), true));
+            return toArray(cancellations);
+        } finally {
+            if (!handoffHandled) {
+                claimHandoffLocked(handoff, HandoffCancellationReason.TRANSFER_FAILED,
+                        cancellations);
             }
         }
     }
 
-    public synchronized boolean isCheckedOut(Long messageId) {
-        boolean isCheckedOut = checkedOut.contains(messageId);
+    public boolean isCheckedOut(Long messageId) {
+        boolean isCheckedOut;
+        List<HandoffCancellationBatch> cancellations = new ArrayList<HandoffCancellationBatch>();
+        try {
+            synchronized (this) {
+                isCheckedOut = checkedOut.contains(messageId);
 
-        /*
-         * If the message is no longer checked out and it was previously marked as deleted, we want
-         * to remove it from the deleted list as well as the buffer so that it does not get acquired
-         * again.
-         */
-        if (!isCheckedOut && deleted.contains(messageId)) {
-            deleted.remove(messageId);
-            buffer.remove(messageId);
-            updateSize();
+            /*
+             * If the message is no longer checked out and it was previously marked as deleted, we
+             * want to remove it from the deleted list as well as the buffer so that it does not get
+             * acquired again.
+             */
+                if (!isCheckedOut && deleted.contains(messageId)) {
+                    deleted.remove(messageId);
+                    ConnectorMessage removed = buffer.remove(messageId);
+                    if (removed != null) {
+                        claimHandoffLocked(removed.takeLifecycleHandoffBundle(),
+                                HandoffCancellationReason.REMOVED, cancellations);
+                    }
+                    updateSize();
+                }
+            }
+        } finally {
+            deliverHandoffCancellations(cancellations);
         }
-
         return isCheckedOut;
     }
 
@@ -261,13 +341,20 @@ public class DestinationQueue extends ConnectorMessageQueue {
         deleted.add(messageId);
     }
 
-    public synchronized boolean releaseIfDeleted(ConnectorMessage connectorMessage) {
-        if (deleted.contains(connectorMessage.getMessageId())) {
-            release(connectorMessage, true);
-            return true;
+    public boolean releaseIfDeleted(ConnectorMessage connectorMessage) {
+        boolean released = false;
+        HandoffCancellationBatch[] cancellations = null;
+        try {
+            synchronized (this) {
+                if (deleted.contains(connectorMessage.getMessageId())) {
+                    cancellations = releaseWithHandoffLocked(connectorMessage, true, null);
+                    released = true;
+                }
+            }
+        } finally {
+            deliverHandoffCancellations(cancellations);
         }
-
-        return false;
+        return released;
     }
 
     private Integer getBucket(ConnectorMessage connectorMessage) {

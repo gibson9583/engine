@@ -20,6 +20,7 @@ import java.util.List;
 import java.util.Map;
 
 import com.mirth.connect.donkey.model.message.attachment.Attachment;
+import com.mirth.connect.donkey.server.channel.lifecycle.LifecycleDispatchToken;
 import com.thoughtworks.xstream.annotations.XStreamAlias;
 
 @XStreamAlias("message")
@@ -36,6 +37,8 @@ public class Message implements Serializable {
     private List<Attachment> attachments;
     private Map<Integer, ConnectorMessage> connectorMessages = new LinkedHashMap<Integer, ConnectorMessage>();
     private transient ConnectorMessage mergedConnectorMessage;
+    private transient LifecycleDispatchToken lifecycleDispatchToken;
+    private transient long messageIncarnationId;
 
     public Long getMessageId() {
         return messageId;
@@ -179,5 +182,21 @@ public class Message implements Serializable {
 
     public void setChannelName(String channelName) {
         this.channelName = channelName;
+    }
+
+    public LifecycleDispatchToken getLifecycleDispatchToken() {
+        return lifecycleDispatchToken;
+    }
+
+    public void setLifecycleDispatchToken(LifecycleDispatchToken lifecycleDispatchToken) {
+        this.lifecycleDispatchToken = lifecycleDispatchToken;
+    }
+
+    public long getMessageIncarnationId() {
+        return messageIncarnationId;
+    }
+
+    public void setMessageIncarnationId(long messageIncarnationId) {
+        this.messageIncarnationId = messageIncarnationId;
     }
 }

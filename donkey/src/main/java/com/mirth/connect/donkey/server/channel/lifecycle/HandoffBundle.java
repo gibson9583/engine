@@ -5,6 +5,7 @@
  */
 package com.mirth.connect.donkey.server.channel.lifecycle;
 
+import java.util.Objects;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
@@ -41,6 +42,17 @@ public final class HandoffBundle {
 
     public boolean isEmpty() {
         return entries.length == 0;
+    }
+
+    /**
+     * Claims this bundle for cancellation without invoking listener code. The returned batch keeps
+     * the registry that created the handoff so callers may safely deliver it after unlocking even
+     * if the engine's current registry changes in the meantime.
+     */
+    public HandoffCancellationBatch claimCancellation(HandoffCancellationReason reason) {
+        Objects.requireNonNull(reason, "reason");
+        return owner == null ? HandoffCancellationBatch.EMPTY
+                : owner.claimHandoffsForCancellation(this, reason);
     }
 
     boolean belongsTo(MessageLifecycleListeners listeners) {

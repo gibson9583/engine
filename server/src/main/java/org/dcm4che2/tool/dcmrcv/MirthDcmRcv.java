@@ -166,7 +166,13 @@ public class MirthDcmRcv extends DcmRcv {
                 sourceConnector.finishDispatch(dispatchResult);
             }
         } catch (Throwable t) {
-        	logger.error("Error receiving DICOM message on channel " + sourceConnector.getChannelId(), t);
+			if (t instanceof VirtualMachineError) {
+				throw (VirtualMachineError) t;
+			}
+			if (t instanceof ThreadDeath) {
+				throw (ThreadDeath) t;
+			}
+			logger.error("Error receiving DICOM message on channel " + sourceConnector.getChannelId(), t);
             if (t instanceof DicomServiceException) {
                 throw (DicomServiceException) t;
             } else {

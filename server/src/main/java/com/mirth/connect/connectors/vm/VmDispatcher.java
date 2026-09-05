@@ -29,6 +29,7 @@ import com.mirth.connect.donkey.server.ConnectorTaskException;
 import com.mirth.connect.donkey.server.Constants;
 import com.mirth.connect.donkey.server.channel.DestinationConnector;
 import com.mirth.connect.donkey.server.channel.DispatchResult;
+import com.mirth.connect.donkey.server.channel.lifecycle.MessageLineage;
 import com.mirth.connect.donkey.server.event.ConnectionStatusEvent;
 import com.mirth.connect.donkey.server.event.ErrorEvent;
 import com.mirth.connect.server.controllers.ConfigurationController;
@@ -116,6 +117,14 @@ public class VmDispatcher extends DestinationConnector {
                     rawMessage = new RawMessage(StringUtils.newString(data, Constants.ATTACHMENT_CHARSET));
                 }
 
+                if (message.getLifecycleDispatchToken() != null) {
+                    rawMessage.setLifecycleDispatchToken(message.getLifecycleDispatchToken());
+                    if (!message.getLifecycleDispatchToken().isEmpty()) {
+                        rawMessage.setMessageLineage(new MessageLineage(currentChannelId,
+                                message.getMessageId()));
+                    }
+                }
+
                 Map<String, Object> rawSourceMap = rawMessage.getSourceMap();
                 Map<String, Object> sourceMap = message.getSourceMap();
 
@@ -168,7 +177,13 @@ public class VmDispatcher extends DestinationConnector {
             responseStatus = Status.SENT;
             responseStatusMessage = "Message routed successfully to channel id: " + targetChannelId;
         } catch (Throwable e) {
-            eventController.dispatchEvent(new ErrorEvent(currentChannelId, getMetaDataId(), message.getMessageId(), ErrorEventType.DESTINATION_CONNECTOR, getDestinationName(), connectorProperties.getName(), "Error routing message to channel id: " + targetChannelId, e));
+            if (e instanceof VirtualMachineError) {
+                throw (VirtualMachineError) e;
+            }
+            if (e instanceof ThreadDeath) {
+                throw (ThreadDeath) e;
+            }
+            eventController.dispatchEvent(new ErrorEvent(currentChannelId, getMetaDataId(), message.getMessageId(), ErrorEventType.DESTINATION_CONNECTOR, getDestinationName(), connectorProperties.getName(), "Error routing message to channel id: " + targetChannelId, e, message.getMessageIncarnationId()));
             responseStatusMessage = ErrorMessageBuilder.buildErrorResponse("Error routing message to channel id: " + targetChannelId, e);
             responseError = ErrorMessageBuilder.buildErrorMessage(connectorProperties.getName(), "Error routing message to channel id: " + targetChannelId, e);
         } finally {
