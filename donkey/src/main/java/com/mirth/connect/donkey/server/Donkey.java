@@ -26,6 +26,7 @@ import org.apache.logging.log4j.Logger;
 import com.google.inject.Inject;
 import com.mirth.connect.donkey.model.DatabaseConstants;
 import com.mirth.connect.donkey.server.channel.Channel;
+import com.mirth.connect.donkey.server.channel.lifecycle.MessageLifecycleListeners;
 import com.mirth.connect.donkey.server.controllers.ChannelController;
 import com.mirth.connect.donkey.server.data.DonkeyDao;
 import com.mirth.connect.donkey.server.data.DonkeyDaoFactory;
@@ -63,6 +64,7 @@ public class Donkey {
     private Serializer serializer = new XStreamSerializer();
     private Encryptor encryptor;
     private EventDispatcher eventDispatcher;
+    private final MessageLifecycleListeners messageLifecycleListeners = new MessageLifecycleListeners();
     private DonkeyStatisticsUpdater statisticsUpdater;
     private Logger logger = LogManager.getLogger(getClass());
     private boolean running = false;
@@ -228,5 +230,9 @@ public class Donkey {
 
     public EventDispatcher getEventDispatcher() {
         return eventDispatcher;
+    }
+
+    public MessageLifecycleListeners getMessageLifecycleListeners() {
+        return messageLifecycleListeners;
     }
 }

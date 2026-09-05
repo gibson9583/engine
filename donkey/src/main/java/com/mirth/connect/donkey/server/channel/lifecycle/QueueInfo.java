@@ -16,8 +16,16 @@ public final class QueueInfo {
     public QueueInfo(MessageInfo message, ExecutionMode executionMode, int nextSendAttempt) {
         this.message = Objects.requireNonNull(message, "message");
         this.executionMode = Objects.requireNonNull(executionMode, "executionMode");
+        if (message.getMetaDataId() == 0 || message.getChainId() == null) {
+            throw new IllegalArgumentException(
+                    "destination-queue message must have destination metadata and a chainId");
+        }
         if (nextSendAttempt <= 0) {
             throw new IllegalArgumentException("nextSendAttempt must be positive");
+        }
+        if ((long) nextSendAttempt != (long) message.getSendAttempts() + 1L) {
+            throw new IllegalArgumentException(
+                    "nextSendAttempt must equal completed sendAttempts plus one");
         }
         this.nextSendAttempt = nextSendAttempt;
     }

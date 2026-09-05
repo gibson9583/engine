@@ -26,8 +26,8 @@ public final class DispatchInfo {
         this.serverId = Objects.requireNonNull(serverId, "serverId");
         this.channelId = Objects.requireNonNull(channelId, "channelId");
         this.channelName = Objects.requireNonNull(channelName, "channelName");
-        if (sourceConnectorMetaDataId < 0) {
-            throw new IllegalArgumentException("sourceConnectorMetaDataId must not be negative");
+        if (sourceConnectorMetaDataId != 0) {
+            throw new IllegalArgumentException("sourceConnectorMetaDataId must be zero");
         }
         this.sourceConnectorMetaDataId = sourceConnectorMetaDataId;
         this.sourceConnectorName = Objects.requireNonNull(sourceConnectorName,

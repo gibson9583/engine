@@ -15,6 +15,10 @@ public final class ProcessInfo {
     public ProcessInfo(MessageInfo message, ExecutionMode executionMode) {
         this.message = Objects.requireNonNull(message, "message");
         this.executionMode = Objects.requireNonNull(executionMode, "executionMode");
+        if (message.getMetaDataId() != 0 || message.getChainId() != null) {
+            throw new IllegalArgumentException(
+                    "process message must use source metadata id zero and no chainId");
+        }
     }
 
     public MessageInfo getMessage() {

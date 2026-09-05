@@ -15,8 +15,9 @@ public final class ChainInfo {
     public ChainInfo(MessageInfo message, ExecutionMode executionMode) {
         this.message = Objects.requireNonNull(message, "message");
         this.executionMode = Objects.requireNonNull(executionMode, "executionMode");
-        if (message.getChainId() == null) {
-            throw new IllegalArgumentException("destination-chain message must have a chainId");
+        if (message.getMetaDataId() == 0 || message.getChainId() == null) {
+            throw new IllegalArgumentException(
+                    "destination-chain message must have destination metadata and a chainId");
         }
     }
 

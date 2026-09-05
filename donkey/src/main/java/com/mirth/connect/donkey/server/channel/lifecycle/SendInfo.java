@@ -16,8 +16,16 @@ public final class SendInfo {
     public SendInfo(MessageInfo message, ExecutionMode executionMode, int attempt) {
         this.message = Objects.requireNonNull(message, "message");
         this.executionMode = Objects.requireNonNull(executionMode, "executionMode");
+        if (message.getMetaDataId() == 0 || message.getChainId() == null) {
+            throw new IllegalArgumentException(
+                    "send message must have destination metadata and a chainId");
+        }
         if (attempt <= 0) {
             throw new IllegalArgumentException("attempt must be positive");
+        }
+        if ((long) attempt != (long) message.getSendAttempts() + 1L) {
+            throw new IllegalArgumentException(
+                    "attempt must equal completed sendAttempts plus one");
         }
         this.attempt = attempt;
     }

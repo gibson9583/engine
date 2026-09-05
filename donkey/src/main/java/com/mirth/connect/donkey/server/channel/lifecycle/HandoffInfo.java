@@ -21,6 +21,10 @@ public final class HandoffInfo {
         switch (kind) {
             case SOURCE_QUEUE:
                 requireAbsent(chainId, nextSendAttempt, "source-queue");
+                if (message.getMetaDataId() != 0 || message.getChainId() != null) {
+                    throw new IllegalArgumentException(
+                            "source-queue handoff must target source metadata with no chainId");
+                }
                 break;
             case ASYNC_CHAIN:
                 if (chainId == null || chainId <= 0 || nextSendAttempt != null) {
@@ -30,12 +34,21 @@ public final class HandoffInfo {
                 if (!chainId.equals(message.getChainId())) {
                     throw new IllegalArgumentException("chainId must match message chainId");
                 }
+                if (message.getMetaDataId() == 0) {
+                    throw new IllegalArgumentException(
+                            "async-chain handoff must target destination metadata");
+                }
                 break;
             case DESTINATION_QUEUE:
                 if (chainId != null || nextSendAttempt == null || nextSendAttempt <= 0) {
                     throw new IllegalArgumentException(
                             "destination-queue handoff requires only a positive nextSendAttempt");
                 }
+                if (message.getMetaDataId() == 0 || message.getChainId() == null) {
+                    throw new IllegalArgumentException(
+                            "destination-queue handoff must target destination metadata and chain");
+                }
+                requireNextAttempt(message, nextSendAttempt);
                 break;
             default:
                 throw new IllegalArgumentException("unsupported handoff kind");
@@ -63,6 +76,13 @@ public final class HandoffInfo {
     private static void requireAbsent(Integer chainId, Integer nextSendAttempt, String kind) {
         if (chainId != null || nextSendAttempt != null) {
             throw new IllegalArgumentException(kind + " handoff has no discriminator");
+        }
+    }
+
+    private static void requireNextAttempt(MessageInfo message, int nextSendAttempt) {
+        if ((long) nextSendAttempt != (long) message.getSendAttempts() + 1L) {
+            throw new IllegalArgumentException(
+                    "nextSendAttempt must equal completed sendAttempts plus one");
         }
     }
 }

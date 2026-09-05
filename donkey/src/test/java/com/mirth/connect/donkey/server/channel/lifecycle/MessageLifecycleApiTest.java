@@ -39,7 +39,10 @@ public class MessageLifecycleApiTest {
             LifecycleOutcome.class, FailureCategory.class, FailureInfo.class,
             LifecycleResult.class, StatusChangeInfo.class, HandoffKind.class, HandoffInfo.class,
             HandoffCancellationReason.class, HandoffCancellation.class,
-            HandoffAbandonReason.class));
+            HandoffAbandonReason.class, LifecycleCallbackKind.class,
+            LifecycleCallbackHealth.class, LifecycleListenerRegistration.class,
+            LifecycleDispatchToken.class, HandoffBundle.class, HandoffCancellationBatch.class,
+            MessageLifecycleListeners.class));
 
     @Test
     public void publicApiUsesOnlyClosedContentFreeTypes() {
@@ -83,36 +86,37 @@ public class MessageLifecycleApiTest {
     @Test
     public void listenerDefaultsAreNoOps() {
         MessageLifecycleListener listener = new MessageLifecycleListener() {};
-        MessageInfo message = message(Status.RECEIVED, 1);
+        MessageInfo source = sourceMessage(Status.RECEIVED);
+        MessageInfo destination = message(Status.RECEIVED, 1);
         DispatchInfo dispatch = new DispatchInfo("server", "channel", "Channel", 0, "source",
                 "HTTP Listener", InboundParentState.ABSENT, null, null);
-        HandoffInfo handoff = new HandoffInfo(HandoffKind.SOURCE_QUEUE, message, null, null);
+        HandoffInfo handoff = new HandoffInfo(HandoffKind.SOURCE_QUEUE, source, null, null);
 
         assertSame(LifecycleHandle.NOOP, listener.onDispatchStart(dispatch));
-        listener.onSourceMessageCreated(message);
+        listener.onSourceMessageCreated(source);
         assertSame(LifecycleHandle.NOOP,
-                listener.onProcessStart(new ProcessInfo(message, ExecutionMode.SYNCHRONOUS),
+                listener.onProcessStart(new ProcessInfo(source, ExecutionMode.SYNCHRONOUS),
                         HandoffReceipt.NOOP));
-        assertSame(LifecycleHandle.NOOP, listener.onFilterTransformerStart(message));
+        assertSame(LifecycleHandle.NOOP, listener.onFilterTransformerStart(source));
         assertSame(LifecycleHandle.NOOP,
                 listener.onDestinationChainStart(
-                        new ChainInfo(message(Status.RECEIVED, 1), ExecutionMode.SYNCHRONOUS),
+                        new ChainInfo(destination, ExecutionMode.SYNCHRONOUS),
                         HandoffReceipt.NOOP));
         assertSame(LifecycleHandle.NOOP,
                 listener.onDestinationQueueStart(
-                        new QueueInfo(message, ExecutionMode.DESTINATION_QUEUE, 1),
+                        new QueueInfo(destination, ExecutionMode.DESTINATION_QUEUE, 1),
                         HandoffReceipt.NOOP));
         assertSame(LifecycleHandle.NOOP,
-                listener.onSendStart(new SendInfo(message, ExecutionMode.SYNCHRONOUS, 1)));
+                listener.onSendStart(new SendInfo(destination, ExecutionMode.SYNCHRONOUS, 1)));
         assertSame(HandoffReceipt.NOOP, listener.onHandoffCreated(handoff));
         listener.onHandoffCancelled(
                 new HandoffCancellation(handoff, HandoffCancellationReason.CANCELLED),
                 HandoffReceipt.NOOP);
         listener.onHandoffsAbandoned(HandoffAbandonReason.UNREGISTERED);
-        listener.onStatusChanged(new StatusChangeInfo(message, Status.QUEUED, Status.RECEIVED,
+        listener.onStatusChanged(new StatusChangeInfo(source, Status.QUEUED, Status.RECEIVED,
                 null));
         LifecycleHandle.NOOP.end(
-                new LifecycleResult(LifecycleOutcome.SUCCESS, message, null, null));
+                new LifecycleResult(LifecycleOutcome.SUCCESS, source, null, null));
     }
 
     @Test
@@ -158,19 +162,35 @@ public class MessageLifecycleApiTest {
 
         HandoffInfo chain = new HandoffInfo(HandoffKind.ASYNC_CHAIN, received, 1, null);
         assertEquals(Integer.valueOf(1), chain.getChainId());
-        HandoffInfo queue = new HandoffInfo(HandoffKind.DESTINATION_QUEUE, received, null, 2);
-        assertEquals(Integer.valueOf(2), queue.getNextSendAttempt());
+        HandoffInfo queue = new HandoffInfo(HandoffKind.DESTINATION_QUEUE, received, null, 1);
+        assertEquals(Integer.valueOf(1), queue.getNextSendAttempt());
+        assertEquals(1,
+                new QueueInfo(received, ExecutionMode.DESTINATION_QUEUE, 1).getNextSendAttempt());
+        assertEquals(1, new SendInfo(received, ExecutionMode.SYNCHRONOUS, 1).getAttempt());
         expectIllegalArgument(
-                () -> new HandoffInfo(HandoffKind.SOURCE_QUEUE, received, 1, null));
+                () -> new HandoffInfo(HandoffKind.SOURCE_QUEUE, received, null, null));
         expectIllegalArgument(
                 () -> new HandoffInfo(HandoffKind.ASYNC_CHAIN, received, 2, null));
         expectIllegalArgument(
                 () -> new HandoffInfo(HandoffKind.DESTINATION_QUEUE, received, null, 0));
+        expectIllegalArgument(
+                () -> new HandoffInfo(HandoffKind.DESTINATION_QUEUE, received, null, 2));
+        expectIllegalArgument(
+                () -> new QueueInfo(received, ExecutionMode.DESTINATION_QUEUE, 2));
+        expectIllegalArgument(() -> new SendInfo(received, ExecutionMode.SYNCHRONOUS, 2));
+        expectIllegalArgument(() -> new ProcessInfo(received, ExecutionMode.SYNCHRONOUS));
+        expectIllegalArgument(() -> new ChainInfo(sourceMessage(Status.RECEIVED),
+                ExecutionMode.SYNCHRONOUS));
     }
 
     private static MessageInfo message(Status status, Integer chainId) {
         return new MessageInfo("server", "channel", "Channel", 7, 1, "destination",
                 "HTTP Sender", 11, chainId, status, 0, 100L, null, null);
+    }
+
+    private static MessageInfo sourceMessage(Status status) {
+        return new MessageInfo("server", "channel", "Channel", 7, 0, "source",
+                "HTTP Listener", 11, null, status, 0, 100L, null, null);
     }
 
     private static Class<?>[] lifecycleTypes() {
@@ -181,7 +201,10 @@ public class MessageLifecycleApiTest {
                 LifecycleOutcome.class, FailureCategory.class, FailureInfo.class,
                 LifecycleResult.class, StatusChangeInfo.class, HandoffKind.class,
                 HandoffInfo.class, HandoffCancellationReason.class, HandoffCancellation.class,
-                HandoffAbandonReason.class };
+                HandoffAbandonReason.class, LifecycleCallbackKind.class,
+                LifecycleCallbackHealth.class, LifecycleListenerRegistration.class,
+                LifecycleDispatchToken.class, HandoffBundle.class, HandoffCancellationBatch.class,
+                MessageLifecycleListeners.class };
     }
 
     private static void assertSafe(Class<?>... types) {
