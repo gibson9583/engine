@@ -15,6 +15,8 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 import java.util.Calendar;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -38,6 +40,97 @@ import com.mirth.connect.donkey.server.channel.lifecycle.ProcessInfo;
 import com.mirth.connect.donkey.server.event.EventDispatcher;
 
 public class ConnectorMessageQueueLifecycleTest {
+    @Test
+    public void emptyLifecycleRefillPreservesPersistedReconstruction() {
+        TestQueue queue = new TestQueue(false);
+        ConnectorMessage reconstructed = message(10);
+        reconstructed.setConnectorName("persisted");
+        Map<Long, ConnectorMessage> refill = new LinkedHashMap<Long, ConnectorMessage>();
+        refill.put(10L, reconstructed);
+        when(queue.dataSource.getSize()).thenReturn(1);
+        when(queue.dataSource.getItems(0, 1)).thenReturn(refill);
+        queue.invalidate(false, false);
+
+        ConnectorMessage producer = message(10);
+        producer.setConnectorName("producer");
+        synchronized (queue) {
+            queue.offerWithHandoffLocked(producer, null);
+        }
+
+        assertSame(reconstructed, queue.buffered(10));
+        assertEquals("persisted", queue.buffered(10).getConnectorName());
+    }
+
+    @Test
+    public void invalidatedRefillReplacesEqualIdWithExactProducerObject() {
+        TestQueue queue = new TestQueue(false);
+        MessageLifecycleListeners listeners = new MessageLifecycleListeners();
+        AtomicInteger cancellations = new AtomicInteger();
+        AtomicReference<HandoffCancellationReason> reason =
+                new AtomicReference<HandoffCancellationReason>();
+        listeners.register(cancellingListener(queue, cancellations, reason));
+        ConnectorMessage reconstructed = message(11);
+        HandoffBundle stale = sourceHandoff(listeners);
+        reconstructed.setLifecycleHandoffBundle(stale);
+        Map<Long, ConnectorMessage> refill = new LinkedHashMap<Long, ConnectorMessage>();
+        refill.put(11L, reconstructed);
+        when(queue.dataSource.getSize()).thenReturn(1);
+        when(queue.dataSource.getItems(0, 1)).thenReturn(refill);
+        queue.invalidate(false, false);
+
+        ConnectorMessage producer = message(11);
+        HandoffBundle current = sourceHandoff(listeners);
+        HandoffCancellationBatch[] claimed;
+        synchronized (queue) {
+            claimed = queue.offerWithHandoffLocked(producer, current);
+            assertEquals(0, cancellations.get());
+        }
+        queue.deliverHandoffCancellations(claimed);
+
+        assertSame(producer, queue.buffered(11));
+        assertSame(current, producer.takeLifecycleHandoffBundle());
+        assertEquals(1, cancellations.get());
+        assertSame(HandoffCancellationReason.DISPLACED, reason.get());
+    }
+
+    @Test
+    public void capacityReductionAndFinishCancelEveryBufferedBundleAfterUnlock() {
+        SourceQueue queue = new SourceQueue();
+        queue.dataSource = mock(ConnectorMessageQueueDataSource.class);
+        queue.eventDispatcher = mock(EventDispatcher.class);
+        queue.channelId = "channel";
+        queue.metaDataId = 0;
+        queue.size = 0;
+        MessageLifecycleListeners listeners = new MessageLifecycleListeners();
+        AtomicInteger cancellations = new AtomicInteger();
+        AtomicReference<HandoffCancellationReason> reason =
+                new AtomicReference<HandoffCancellationReason>();
+        listeners.register(cancellingListener(queue, cancellations, reason));
+        ConnectorMessage first = message(21);
+        ConnectorMessage second = message(22);
+        synchronized (queue) {
+            queue.deliverHandoffCancellations(
+                    queue.offerWithHandoffLocked(first, sourceHandoff(listeners)));
+            queue.deliverHandoffCancellations(
+                    queue.offerWithHandoffLocked(second, sourceHandoff(listeners)));
+        }
+
+        queue.setBufferCapacity(1);
+
+        assertEquals(2, cancellations.get());
+        assertSame(HandoffCancellationReason.CAPACITY_REDUCED, reason.get());
+
+        queue.size = 0;
+        ConnectorMessage third = message(23);
+        synchronized (queue) {
+            queue.deliverHandoffCancellations(
+                    queue.offerWithHandoffLocked(third, sourceHandoff(listeners)));
+        }
+        queue.finish(third);
+        assertEquals(3, cancellations.get());
+        assertSame(HandoffCancellationReason.REMOVED, reason.get());
+    }
+
     @Test
     public void retainedObjectKeepsExactBundleForConsumer() {
         TestQueue queue = new TestQueue(false);

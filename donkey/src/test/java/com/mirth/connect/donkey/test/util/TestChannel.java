@@ -24,6 +24,7 @@ import com.mirth.connect.donkey.util.SerializerProvider;
 import com.mirth.connect.donkey.util.xstream.XStreamSerializer;
 
 public class TestChannel extends Channel {
+    private final XStreamSerializer testSerializer = createTestSerializer();
     private List<Long> messageIds = new ArrayList<Long>();
     private boolean isDeployed = false;
     private volatile boolean queueThreadRunning = false;
@@ -34,9 +35,21 @@ public class TestChannel extends Channel {
         setDaoFactory(new BufferedDaoFactory(Donkey.getInstance().getDaoFactory(), new SerializerProvider() {
             @Override
             public Serializer getSerializer(Integer metaDataId) {
-                return new XStreamSerializer();
+                return createTestSerializer();
             }
         }, Donkey.getInstance().getStatisticsUpdater()));
+    }
+
+    @Override
+    public Serializer getSerializer() {
+        return testSerializer;
+    }
+
+    private static XStreamSerializer createTestSerializer() {
+        XStreamSerializer serializer = new XStreamSerializer();
+        serializer.getXStream().allowTypesByWildcard(
+                new String[] { "com.mirth.connect.donkey.test.util.**" });
+        return serializer;
     }
 
     public int getNumMessages() {

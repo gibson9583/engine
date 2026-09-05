@@ -209,7 +209,17 @@ public abstract class ConnectorMessageQueue {
                  */
                 cancellations.addAll(fillBufferLocked(
                         HandoffCancellationReason.REFILL_DISCARDED));
-                retained = buffer.get(connectorMessage.getMessageId()) == connectorMessage;
+                ConnectorMessage refilled = buffer.get(connectorMessage.getMessageId());
+                if (refilled == connectorMessage) {
+                    retained = true;
+                } else if (refilled != null && handoff != null) {
+                    claimHandoffLocked(refilled.takeLifecycleHandoffBundle(),
+                            HandoffCancellationReason.DISPLACED, cancellations);
+                    // Replacing a value for an existing LinkedHashMap key preserves queue order
+                    // while retaining the exact object carrying this producer's lifecycle state.
+                    buffer.put(connectorMessage.getMessageId(), connectorMessage);
+                    retained = true;
+                }
             } else {
                 if (size == null) {
                     updateSize();

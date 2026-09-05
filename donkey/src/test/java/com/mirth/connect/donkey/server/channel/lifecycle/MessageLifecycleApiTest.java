@@ -28,7 +28,7 @@ public class MessageLifecycleApiTest {
             DispatchInfo.class, InboundTraceParent.class, MessageLineage.class, MessageInfo.class,
             ProcessInfo.class, ChainInfo.class, QueueInfo.class, SendInfo.class, FailureInfo.class,
             LifecycleResult.class, StatusChangeInfo.class, HandoffInfo.class,
-            HandoffCancellation.class };
+            HandoffCancellation.class, LifecycleCallbackHealth.class };
 
     private static final Set<Class<?>> SAFE_SIGNATURE_TYPES = new HashSet<Class<?>>(Arrays.asList(
             void.class, boolean.class, int.class, long.class, String.class, Integer.class,

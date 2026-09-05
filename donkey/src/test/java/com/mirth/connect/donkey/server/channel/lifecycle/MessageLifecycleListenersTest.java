@@ -23,6 +23,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 
 import org.junit.After;
 import org.junit.Test;
@@ -108,6 +109,36 @@ public class MessageLifecycleListenersTest {
         handle.end(result);
 
         assertEquals(Arrays.asList("second:end", "first:end"), calls);
+    }
+
+    @Test
+    public void quarantineAfterStartDoesNotPreventRetainedHandleEnd() {
+        MessageLifecycleListeners listeners = new MessageLifecycleListeners(
+                System::nanoTime, Long.MAX_VALUE, Long.MAX_VALUE, 1);
+        AtomicInteger ends = new AtomicInteger();
+        LifecycleListenerRegistration registration = listeners.register(
+                new MessageLifecycleListener() {
+                    @Override
+                    public LifecycleHandle onDispatchStart(DispatchInfo dispatch) {
+                        return result -> ends.incrementAndGet();
+                    }
+
+                    @Override
+                    public void onSourceMessageCreated(MessageInfo source) {
+                        throw new IllegalStateException("quarantine");
+                    }
+                });
+        LifecycleDispatchToken token = listeners.captureToken();
+        LifecycleHandle retained = listeners.onDispatchStart(token, dispatch());
+
+        listeners.onSourceMessageCreated(token, sourceMessage(0));
+        retained.end(new LifecycleResult(LifecycleOutcome.SUCCESS, sourceMessage(0), null,
+                null));
+        retained.end(new LifecycleResult(LifecycleOutcome.SUCCESS, sourceMessage(0), null,
+                null));
+
+        assertTrue(registration.isQuarantined());
+        assertEquals(1, ends.get());
     }
 
     @Test
@@ -296,6 +327,30 @@ public class MessageLifecycleListenersTest {
             assertSame(fatal, actual);
         }
         assertEquals(Arrays.asList("last:end", "fatal:end", "first:end"), calls);
+    }
+
+    @Test
+    public void nonfatalEndFailureIsIsolatedAndEverySiblingStillEnds() {
+        MessageLifecycleListeners listeners = new MessageLifecycleListeners();
+        List<String> calls = new ArrayList<String>();
+        listeners.register(new RecordingListener("first", calls));
+        listeners.register(new RecordingListener("failing", calls) {
+            @Override
+            protected LifecycleHandle newHandle() {
+                return result -> {
+                    calls.add("failing:end");
+                    throw new IllegalStateException("isolated end failure");
+                };
+            }
+        });
+        listeners.register(new RecordingListener("last", calls));
+        LifecycleHandle handle = listeners.onDispatchStart(listeners.captureToken(), dispatch());
+        calls.clear();
+
+        handle.end(new LifecycleResult(LifecycleOutcome.SUCCESS, sourceMessage(0), null, null));
+        handle.end(new LifecycleResult(LifecycleOutcome.SUCCESS, sourceMessage(0), null, null));
+
+        assertEquals(Arrays.asList("last:end", "failing:end", "first:end"), calls);
     }
 
     @Test
@@ -564,6 +619,66 @@ public class MessageLifecycleListenersTest {
             release.countDown();
             executor.shutdownNow();
         }
+    }
+
+    @Test
+    public void handoffCreationThatUnregistersItselfPublishesNothingAndSettlesOnce() {
+        MessageLifecycleListeners listeners = new MessageLifecycleListeners();
+        AtomicReference<LifecycleListenerRegistration> ownership =
+                new AtomicReference<LifecycleListenerRegistration>();
+        AtomicInteger abandoned = new AtomicInteger();
+        AtomicInteger cancelled = new AtomicInteger();
+        Receipt receipt = new Receipt("self-removal");
+        ownership.set(listeners.register(new MessageLifecycleListener() {
+            @Override
+            public HandoffReceipt onHandoffCreated(HandoffInfo handoff) {
+                ownership.get().unregister();
+                return receipt;
+            }
+
+            @Override
+            public void onHandoffsAbandoned(HandoffAbandonReason reason) {
+                assertSame(HandoffAbandonReason.UNREGISTERED, reason);
+                abandoned.incrementAndGet();
+            }
+
+            @Override
+            public void onHandoffCancelled(HandoffCancellation cancellation,
+                    HandoffReceipt actual) {
+                assertSame(HandoffCancellationReason.TRANSFER_FAILED,
+                        cancellation.getReason());
+                assertSame(receipt, actual);
+                cancelled.incrementAndGet();
+            }
+        }));
+
+        HandoffBundle bundle = listeners.createHandoffs(listeners.captureToken(),
+                sourceHandoff(sourceMessage(0)));
+
+        assertTrue(bundle.isEmpty());
+        assertEquals(1, abandoned.get());
+        assertEquals(1, cancelled.get());
+        assertEquals(0, listeners.getRegisteredListenerCount());
+    }
+
+    @Test
+    public void ownershipCarriersRejectUseByAnotherRegistry() {
+        MessageLifecycleListeners owner = new MessageLifecycleListeners();
+        MessageLifecycleListeners foreign = new MessageLifecycleListeners();
+        LifecycleListenerRegistration registration = owner.register(
+                new HandoffListener("owner", new Receipt("owner"),
+                        new ArrayList<String>()));
+        LifecycleDispatchToken token = owner.captureToken();
+        HandoffBundle bundle = owner.createHandoffs(token,
+                sourceHandoff(sourceMessage(0)));
+        HandoffCancellationBatch cancellation = bundle.claimCancellation(
+                HandoffCancellationReason.CANCELLED);
+
+        expectIllegalArgument(() -> foreign.unregister(registration));
+        expectIllegalArgument(() -> foreign.allocateMessageIncarnationId(token));
+        expectIllegalArgument(() -> foreign.onProcessStart(
+                new ProcessInfo(sourceMessage(0), ExecutionMode.SOURCE_QUEUE), bundle));
+        expectIllegalArgument(() -> foreign.deliverHandoffCancellations(cancellation));
     }
 
     @Test
@@ -841,6 +956,51 @@ public class MessageLifecycleListenersTest {
         }
     }
 
+    @Test(timeout = 10000)
+    public void concurrentRegisterCaptureFireAndUnregisterLeavesNoRegistrations()
+            throws Exception {
+        MessageLifecycleListeners listeners = new MessageLifecycleListeners();
+        AtomicInteger callbacks = new AtomicInteger();
+        AtomicInteger failures = new AtomicInteger();
+        ExecutorService executor = Executors.newFixedThreadPool(4);
+        CountDownLatch start = new CountDownLatch(1);
+        List<Future<?>> futures = new ArrayList<Future<?>>();
+        try {
+            for (int thread = 0; thread < 4; thread++) {
+                futures.add(executor.submit(() -> {
+                    await(start);
+                    for (int i = 0; i < 100; i++) {
+                        MessageLifecycleListener listener = new MessageLifecycleListener() {
+                            @Override
+                            public void onSourceMessageCreated(MessageInfo source) {
+                                callbacks.incrementAndGet();
+                            }
+                        };
+                        try {
+                            LifecycleListenerRegistration registration =
+                                    listeners.register(listener);
+                            LifecycleDispatchToken token = listeners.captureToken();
+                            listeners.onSourceMessageCreated(token, sourceMessage(0));
+                            registration.unregister();
+                        } catch (Throwable failure) {
+                            failures.incrementAndGet();
+                        }
+                    }
+                }));
+            }
+            start.countDown();
+            for (Future<?> future : futures) {
+                future.get(5, TimeUnit.SECONDS);
+            }
+        } finally {
+            executor.shutdownNow();
+        }
+
+        assertEquals(0, failures.get());
+        assertTrue(callbacks.get() >= 400);
+        assertEquals(0, listeners.getRegisteredListenerCount());
+    }
+
     private static DispatchInfo dispatch() {
         return new DispatchInfo("server", "channel", "Channel", 0, "source", "HTTP Listener",
                 InboundParentState.ABSENT, null, null);
@@ -860,6 +1020,15 @@ public class MessageLifecycleListenersTest {
             latch.await();
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
+        }
+    }
+
+    private static void expectIllegalArgument(Runnable action) {
+        try {
+            action.run();
+            fail("expected foreign ownership rejection");
+        } catch (IllegalArgumentException expected) {
+            // Expected.
         }
     }
 

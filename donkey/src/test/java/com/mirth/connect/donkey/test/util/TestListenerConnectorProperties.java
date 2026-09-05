@@ -25,6 +25,11 @@ public class TestListenerConnectorProperties extends ConnectorProperties impleme
     private ListenerConnectorProperties listenerConnectorProperties;
     private SourceConnectorProperties sourceConnectorProperties;
 
+    public TestListenerConnectorProperties() {
+        listenerConnectorProperties = new ListenerConnectorProperties("0");
+        sourceConnectorProperties = new SourceConnectorProperties();
+    }
+
     @Override
     public SourceConnectorProperties getSourceConnectorProperties() {
         return sourceConnectorProperties;

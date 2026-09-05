@@ -64,6 +64,7 @@ import com.mirth.connect.donkey.server.DonkeyConfiguration;
 import com.mirth.connect.donkey.server.channel.Channel;
 import com.mirth.connect.donkey.server.channel.DestinationChainProvider;
 import com.mirth.connect.donkey.server.channel.DestinationConnector;
+import com.mirth.connect.donkey.server.channel.DefaultChannelProcessLock;
 import com.mirth.connect.donkey.server.channel.DispatchResult;
 import com.mirth.connect.donkey.server.channel.FilterTransformerExecutor;
 import com.mirth.connect.donkey.server.channel.MetaDataReplacer;
@@ -82,6 +83,7 @@ import com.mirth.connect.donkey.server.event.EventDispatcher;
 import com.mirth.connect.donkey.server.message.DataType;
 import com.mirth.connect.donkey.server.queue.ConnectorMessageQueueDataSource;
 import com.mirth.connect.donkey.server.queue.DestinationQueue;
+import com.mirth.connect.donkey.server.queue.SourceQueue;
 import com.mirth.connect.donkey.util.ResourceUtil;
 import com.mirth.connect.donkey.util.Serializer;
 import com.mirth.connect.donkey.util.SerializerProvider;
@@ -128,7 +130,10 @@ public class TestUtils {
         TestChannel channel = new TestChannel();
 
         channel.setChannelId(channelId);
+        channel.setName(channelId);
         channel.setServerId(serverId);
+        channel.setSourceQueue(new SourceQueue());
+        channel.setProcessLock(new DefaultChannelProcessLock(1));
 
         channel.setPreProcessor(new TestPreProcessor());
         channel.setPostProcessor(new TestPostProcessor());
@@ -140,10 +145,11 @@ public class TestUtils {
         channel.setResponseSelector(new ResponseSelector(sourceConnector.getInboundDataType()));
         channel.getSourceConnector().setFilterTransformerExecutor(TestUtils.createDefaultFilterTransformerExecutor());
 
-        TestDestinationConnector destinationConnector = (TestDestinationConnector) TestUtils.createDefaultDestinationConnector();
-        destinationConnector.setChannelId(channelId);
-        destinationConnector.setMetaDataId(1);
-        destinationConnector.setResponseTransformerExecutor(TestUtils.createDefaultResponseTransformerExecutor());
+        TestDestinationConnector destinationConnector = new TestDestinationConnector();
+        destinationConnector.setChannel(channel);
+        TestUtils.initDestinationConnector(destinationConnector, channelId, serverId,
+                new TestConnectorProperties(), TestUtils.DEFAULT_DESTINATION_NAME,
+                new TestDataType(), new TestDataType(), new TestResponseTransformer(), 1);
 
         DestinationChainProvider chain = new DestinationChainProvider();
         chain.setChannelId(channelId);
@@ -170,8 +176,11 @@ public class TestUtils {
         TestChannel channel = new TestChannel();
 
         channel.setChannelId(channelId);
+        channel.setName(channelId);
         channel.setServerId(serverId);
         channel.setStorageSettings(storageSettings);
+        channel.setSourceQueue(new SourceQueue());
+        channel.setProcessLock(new DefaultChannelProcessLock(1));
 
         if (storageSettings.isEnabled()) {
             channel.setDaoFactory(new BufferedDaoFactory(Donkey.getInstance().getDaoFactory(), new SerializerProvider() {
@@ -193,6 +202,7 @@ public class TestUtils {
         sourceConnector.setChannel(channel);
 
         channel.setSourceConnector(sourceConnector);
+        channel.setResponseSelector(new ResponseSelector(sourceConnector.getInboundDataType()));
         channel.getSourceConnector().setFilterTransformerExecutor(TestUtils.createDefaultFilterTransformerExecutor());
 
         for (int i = 1; i <= numChains; i++) {
@@ -201,8 +211,12 @@ public class TestUtils {
 
             for (int j = 1; j <= numDestinationsPerChain; j++) {
                 int metaDataId = (i - 1) * numDestinationsPerChain + j;
-                TestDestinationConnector destinationConnector = (TestDestinationConnector) TestUtils.createDestinationConnector(channel.getChannelId(), channel.getServerId(), new TestConnectorProperties(), TestUtils.DEFAULT_DESTINATION_NAME, new TestDataType(), new TestDataType(), new TestResponseTransformer(), metaDataId);
-                destinationConnector.setChannelId(channelId);
+                TestDestinationConnector destinationConnector = new TestDestinationConnector();
+                destinationConnector.setChannel(channel);
+                TestUtils.initDestinationConnector(destinationConnector, channel.getChannelId(),
+                        channel.getServerId(), new TestConnectorProperties(),
+                        TestUtils.DEFAULT_DESTINATION_NAME, new TestDataType(),
+                        new TestDataType(), new TestResponseTransformer(), metaDataId);
                 destinationConnector.setMetaDataReplacer(sourceConnector.getMetaDataReplacer());
                 destinationConnector.setMetaDataColumns(channel.getMetaDataColumns());
                 destinationConnector.setFilterTransformerExecutor(TestUtils.createDefaultFilterTransformerExecutor());
@@ -216,7 +230,7 @@ public class TestUtils {
     }
 
     public static SourceConnector createDefaultSourceConnector() {
-        return createSourceConnector(new TestConnectorProperties(), new TestDataType(), new TestDataType());
+        return createSourceConnector(new TestListenerConnectorProperties(), new TestDataType(), new TestDataType());
     }
 
     public static SourceConnector createSourceConnector(ConnectorProperties connectorProperties, DataType inboundDataType, DataType outboundDataType) {
@@ -1298,6 +1312,24 @@ public class TestUtils {
         } catch (Exception e) {
             throw new DonkeyDaoException("Failed to read configuration file", e);
         }
+    }
+
+    /**
+     * Returns the legacy Donkey test configuration backed by an isolated in-memory Derby
+     * database. Singular {@code *Test} suites run in the default Gradle build and therefore
+     * cannot depend on a developer-managed PostgreSQL service.
+     */
+    public static DonkeyConfiguration getEmbeddedDonkeyTestConfiguration(String databaseName) {
+        DonkeyConfiguration configuration = getDonkeyTestConfiguration();
+        Properties properties = configuration.getDonkeyProperties();
+        properties.setProperty("database", "derby");
+        properties.setProperty("database.url",
+                "jdbc:derby:memory:" + databaseName + ";create=true");
+        properties.remove("database.driver");
+        properties.remove("database.username");
+        properties.remove("database.password");
+        properties.setProperty("database.pool", "DBCP");
+        return configuration;
     }
 
     public static void runChannelTest(String testMessage, String channelId, String serverId, final String testName, final int numChannels, final int numChains, final int numDestinations, final boolean respondAfterProcessing, final Integer testSize, final Integer testMillis, final Integer warmupMillis, StorageSettings storageSettings) throws Exception {
