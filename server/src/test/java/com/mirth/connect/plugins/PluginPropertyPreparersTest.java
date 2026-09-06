@@ -11,6 +11,10 @@ import java.util.Properties;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.FutureTask;
+import java.util.concurrent.Executors;
+import java.util.concurrent.CyclicBarrier;
 
 import org.junit.After;
 import org.junit.Test;
@@ -158,6 +162,112 @@ public class PluginPropertyPreparersTest {
         closing.join(2000);
         registration.close();
         assertTrue(closed.get());
+    }
+
+    @Test(timeout = 5000)
+    public void recoveryCanActivateInsidePrepareWithoutUpgradingItsInvocationLease() throws Exception {
+        AtomicReference<PluginPropertyPreparers.PreparerRegistration> owner = new AtomicReference<>();
+        owner.set(PluginPropertyPreparers.register("replay", this, (incoming, merge, context) -> {
+            owner.get().activate();
+            return new PreparedPluginProperties(new Properties(), NoChange.INSTANCE,
+                    (outcome, failure) -> { });
+        }));
+        owner.get().activateRecoveryOnly();
+        FutureTask<PreparedPluginProperties> replay = new FutureTask<>(() ->
+                PluginPropertyPreparers.prepare("replay", new Properties(), false,
+                        PropertyWriteContext.recovery(1)));
+        Thread worker = new Thread(replay);
+        worker.setDaemon(true);
+        worker.start();
+        assertTrue(replay.get(2, TimeUnit.SECONDS).getDirective() instanceof NoChange);
+        assertTrue(PluginPropertyPreparers.isOperational("replay", this));
+        // Activation remains one-shot; repeated or stale transitions cannot reopen an owner.
+        assertThrows(IllegalStateException.class, owner.get()::activate);
+        owner.get().close();
+        assertThrows(IllegalStateException.class, owner.get()::activate);
+    }
+
+    @Test(timeout = 5000)
+    public void activationDoesNotWaitForPrepareBlockedOnPublicationButCloseStillDoes()
+            throws Exception {
+        Object publicationLock = new Object();
+        CountDownLatch entered = new CountDownLatch(1);
+        AtomicBoolean closed = new AtomicBoolean();
+        PreparePluginPropertiesInterface preparer = new PreparePluginPropertiesInterface() {
+            @Override
+            public PreparedPluginProperties prepare(Properties incoming, boolean merge,
+                    PropertyWriteContext context) {
+                entered.countDown();
+                synchronized (publicationLock) {
+                    assertFalse(closed.get());
+                    return new PreparedPluginProperties(new Properties(), NoChange.INSTANCE,
+                            (outcome, failure) -> { });
+                }
+            }
+            @Override
+            public void close() { closed.set(true); }
+        };
+        var registration = PluginPropertyPreparers.register("publication", this, preparer);
+        registration.activateRecoveryOnly();
+        FutureTask<PreparedPluginProperties> prepare = new FutureTask<>(() ->
+                PluginPropertyPreparers.prepare("publication", new Properties(), false,
+                        PropertyWriteContext.recovery(1)));
+        Thread preparing = new Thread(prepare);
+        preparing.setDaemon(true);
+        FutureTask<Void> close = new FutureTask<>(() -> { registration.close(); return null; });
+        Thread closing = new Thread(close);
+        closing.setDaemon(true);
+        synchronized (publicationLock) {
+            preparing.start();
+            assertTrue(entered.await(2, TimeUnit.SECONDS));
+            // Real completion holds the publication lock while another request has
+            // already acquired its engine invocation lease and is waiting for that lock.
+            registration.activate();
+            closing.start();
+            assertFalse(closed.get());
+        }
+        prepare.get(2, TimeUnit.SECONDS);
+        close.get(2, TimeUnit.SECONDS);
+        assertTrue(closed.get());
+        assertUnavailable(() -> PluginPropertyPreparers.prepare("publication", new Properties(),
+                false, PropertyWriteContext.pluginApi()));
+    }
+
+    @Test(timeout = 10000)
+    public void concurrentActivationIsOneShotAndRecoveryAdmissionRemainsValid() throws Exception {
+        var workers = Executors.newFixedThreadPool(3, task -> {
+            Thread thread = new Thread(task);
+            thread.setDaemon(true);
+            return thread;
+        });
+        try {
+            for (int attempt = 0; attempt < 100; attempt++) {
+                var registration = PluginPropertyPreparers.register("race", this, noChangePreparer());
+                registration.activateRecoveryOnly();
+                CyclicBarrier start = new CyclicBarrier(3);
+                java.util.concurrent.Callable<Boolean> activate = () -> {
+                    start.await(2, TimeUnit.SECONDS);
+                    try { registration.activate(); return true; }
+                    catch (IllegalStateException alreadyActive) { return false; }
+                };
+                var first = workers.submit(activate);
+                var second = workers.submit(activate);
+                var recovery = workers.submit(() -> {
+                    start.await(2, TimeUnit.SECONDS);
+                    for (int read = 0; read < 100; read++) {
+                        assertTrue(PluginPropertyPreparers.isOperational("race", this));
+                        PluginPropertyPreparers.prepare("race", new Properties(), false,
+                                PropertyWriteContext.recovery(1));
+                    }
+                    return true;
+                });
+                assertTrue(first.get(2, TimeUnit.SECONDS) ^ second.get(2, TimeUnit.SECONDS));
+                assertTrue(recovery.get(2, TimeUnit.SECONDS));
+                registration.close();
+            }
+        } finally {
+            workers.shutdownNow();
+        }
     }
 
     private static PreparePluginPropertiesInterface noChangePreparer() {

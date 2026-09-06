@@ -51,8 +51,9 @@ public final class PluginPropertyPreparers {
         }
         entry.lock.readLock().lock();
         try {
+            State observed = entry.state;
             return ENTRIES.get(pluginPoint) == entry && entry.owner == owner
-                    && (entry.state == State.ACTIVE || entry.state == State.RECOVERY_ONLY);
+                    && (observed == State.ACTIVE || observed == State.RECOVERY_ONLY);
         } finally {
             entry.lock.readLock().unlock();
         }
@@ -121,54 +122,54 @@ public final class PluginPropertyPreparers {
 
         private boolean permits(PropertyWriteContext context) {
             Objects.requireNonNull(context, "context");
-            if (state == State.INITIALIZING) {
+            State observed = state;
+            if (observed == State.INITIALIZING) {
                 return context.getOrigin() == PropertyWriteOrigin.INITIALIZATION
                         && context.getPurpose() == PropertyWritePurpose.NORMAL;
             }
-            if (state == State.ACTIVE) {
+            if (observed == State.ACTIVE) {
                 return context.getOrigin() != PropertyWriteOrigin.INITIALIZATION
                         && (context.getPurpose() == PropertyWritePurpose.NORMAL
                                 || context.getOrigin() == PropertyWriteOrigin.PLUGIN_API
                                 && context.getPurpose() == PropertyWritePurpose.RECOVERY);
             }
-            return state == State.RECOVERY_ONLY
+            return observed == State.RECOVERY_ONLY
                     && context.getOrigin() == PropertyWriteOrigin.PLUGIN_API
                     && context.getPurpose() == PropertyWritePurpose.RECOVERY;
         }
 
-        private void transition(State expected, State target) {
-            lock.writeLock().lock();
-            try {
-                if (state != expected || ENTRIES.get(pluginPoint) != this) {
-                    throw new IllegalStateException("invalid_property_preparer_transition");
-                }
-                state = target;
-            } finally {
-                lock.writeLock().unlock();
+        // State changes use this entry's monitor, separately from invocation ownership.
+        // Activation can follow reconciliation inside prepare(), which already holds a
+        // read lease. Taking the write lease here would attempt an unsupported lock
+        // upgrade; an external activation could also wait behind a preparer that is
+        // waiting for the plugin's publication lock. Activation only changes admission
+        // for future calls. Close still waits for existing invocations before closing
+        // the preparer, and serializes its terminal state with these transitions.
+        private synchronized void transition(State expected, State target) {
+            if (state != expected || ENTRIES.get(pluginPoint) != this) {
+                throw new IllegalStateException("invalid_property_preparer_transition");
             }
+            state = target;
         }
 
-        private void transitionToActive() {
-            lock.writeLock().lock();
-            try {
-                if ((state != State.INITIALIZING && state != State.RECOVERY_ONLY)
-                        || ENTRIES.get(pluginPoint) != this) {
-                    throw new IllegalStateException("invalid_property_preparer_transition");
-                }
-                state = State.ACTIVE;
-            } finally {
-                lock.writeLock().unlock();
+        private synchronized void transitionToActive() {
+            if ((state != State.INITIALIZING && state != State.RECOVERY_ONLY)
+                    || ENTRIES.get(pluginPoint) != this) {
+                throw new IllegalStateException("invalid_property_preparer_transition");
             }
+            state = State.ACTIVE;
         }
 
         private void close() {
             lock.writeLock().lock();
             try {
-                if (state == State.CLOSED) {
-                    return;
+                synchronized (this) {
+                    if (state == State.CLOSED) {
+                        return;
+                    }
+                    state = State.CLOSED;
+                    ENTRIES.remove(pluginPoint, this);
                 }
-                state = State.CLOSED;
-                ENTRIES.remove(pluginPoint, this);
                 try {
                     preparer.close();
                 } catch (Exception e) {
