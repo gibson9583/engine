@@ -46,6 +46,198 @@ public class PluginPropertyPreparersTest {
         replacement.close();
     }
 
+    @Test(timeout = 5000)
+    public void unregisterDoesNotWaitForAdmittedPrepareOrInvokeItsCloseHook() throws Exception {
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        AtomicBoolean closed = new AtomicBoolean();
+        var registration = PluginPropertyPreparers.register("detach", this,
+                new PreparePluginPropertiesInterface() {
+            @Override
+            public PreparedPluginProperties prepare(Properties values, boolean merge,
+                    PropertyWriteContext context) {
+                entered.countDown();
+                try {
+                    release.await();
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new IllegalStateException(interrupted);
+                }
+                return new PreparedPluginProperties(new Properties(), NoChange.INSTANCE,
+                        (outcome, failure) -> { });
+            }
+            @Override
+            public void close() { closed.set(true); }
+        });
+        registration.activate();
+        FutureTask<PreparedPluginProperties> preparing = new FutureTask<>(() ->
+                PluginPropertyPreparers.prepare("detach", new Properties(), false,
+                        PropertyWriteContext.pluginApi()));
+        Thread worker = new Thread(preparing);
+        worker.setDaemon(true);
+        worker.start();
+        try {
+            assertTrue(entered.await(1, TimeUnit.SECONDS));
+            registration.unregister();
+            assertFalse(preparing.isDone());
+            assertFalse(closed.get());
+            assertEquals(PluginPropertyPreparers.State.CLOSED, registration.getState());
+            assertFalse(PluginPropertyPreparers.isOperational("detach", this));
+            assertUnavailable(() -> PluginPropertyPreparers.prepare("detach", new Properties(),
+                    false, PropertyWriteContext.pluginApi()));
+            assertThrows(IllegalStateException.class, registration::activate);
+            var replacement = PluginPropertyPreparers.register("detach", this, noChangePreparer());
+            replacement.activate();
+            registration.unregister();
+            assertTrue(PluginPropertyPreparers.isOperational("detach", this));
+        } finally {
+            release.countDown();
+        }
+        preparing.get(1, TimeUnit.SECONDS);
+        registration.close();
+        assertFalse("unregister transfers cleanup ownership to caller", closed.get());
+        assertTrue(PluginPropertyPreparers.isOperational("detach", this));
+    }
+
+    @Test(timeout = 5000)
+    public void unregisterIsTerminalFromEveryLiveStateAndCanRunInsidePrepare() throws Exception {
+        for (PluginPropertyPreparers.State state : new PluginPropertyPreparers.State[] {
+                PluginPropertyPreparers.State.INITIALIZING,
+                PluginPropertyPreparers.State.ACTIVE,
+                PluginPropertyPreparers.State.RECOVERY_ONLY }) {
+            AtomicReference<PluginPropertyPreparers.PreparerRegistration> owner = new AtomicReference<>();
+            AtomicBoolean hookCalled = new AtomicBoolean();
+            owner.set(PluginPropertyPreparers.register("self-detach", this,
+                    new PreparePluginPropertiesInterface() {
+                @Override
+                public PreparedPluginProperties prepare(Properties incoming, boolean merge,
+                        PropertyWriteContext context) {
+                    owner.get().unregister();
+                    var replacement = PluginPropertyPreparers.register("self-detach", new Object(),
+                            noChangePreparer());
+                    replacement.activate();
+                    owner.get().unregister();
+                    assertEquals(PluginPropertyPreparers.State.ACTIVE, replacement.getState());
+                    return new PreparedPluginProperties(new Properties(), NoChange.INSTANCE,
+                            (outcome, failure) -> { });
+                }
+                @Override
+                public void close() { hookCalled.set(true); }
+            }));
+            PropertyWriteContext context = PropertyWriteContext.initialization();
+            if (state == PluginPropertyPreparers.State.ACTIVE) {
+                owner.get().activate();
+                context = PropertyWriteContext.pluginApi();
+            } else if (state == PluginPropertyPreparers.State.RECOVERY_ONLY) {
+                owner.get().activateRecoveryOnly();
+                context = PropertyWriteContext.recovery(1);
+            }
+            PluginPropertyPreparers.prepare("self-detach", new Properties(), false, context);
+            assertEquals(PluginPropertyPreparers.State.CLOSED, owner.get().getState());
+            assertThrows(IllegalStateException.class, owner.get()::activate);
+            assertThrows(IllegalStateException.class, owner.get()::activateRecoveryOnly);
+            owner.get().close();
+            assertFalse(hookCalled.get());
+            PluginPropertyPreparers.clearForTest();
+        }
+    }
+
+    @Test(timeout = 15000)
+    public void concurrentUnregisterCloseAndActivationCannotReopenOrRemoveReplacement()
+            throws Exception {
+        var workers = Executors.newFixedThreadPool(3, task -> {
+            Thread worker = new Thread(task);
+            worker.setDaemon(true);
+            return worker;
+        });
+        try {
+            for (int attempt = 0; attempt < 300; attempt++) {
+                var hookCalls = new java.util.concurrent.atomic.AtomicInteger();
+                var registration = PluginPropertyPreparers.register("detach-race", this,
+                        new PreparePluginPropertiesInterface() {
+                    @Override
+                    public PreparedPluginProperties prepare(Properties incoming, boolean merge,
+                            PropertyWriteContext context) {
+                        return new PreparedPluginProperties(new Properties(), NoChange.INSTANCE,
+                                (outcome, failure) -> { });
+                    }
+                    @Override
+                    public void close() { hookCalls.incrementAndGet(); }
+                });
+                if (attempt % 3 == 1) registration.activate();
+                if (attempt % 3 == 2) registration.activateRecoveryOnly();
+                CyclicBarrier start = new CyclicBarrier(3);
+                var close = workers.submit(() -> {
+                    start.await(2, TimeUnit.SECONDS);
+                    registration.close();
+                    return null;
+                });
+                var detach = workers.submit(() -> {
+                    start.await(2, TimeUnit.SECONDS);
+                    registration.unregister();
+                    return null;
+                });
+                var activate = workers.submit(() -> {
+                    start.await(2, TimeUnit.SECONDS);
+                    try { registration.activate(); }
+                    catch (IllegalStateException terminalOrAlreadyActive) { }
+                    try {
+                        PluginPropertyPreparers.prepare("detach-race", new Properties(), false,
+                                PropertyWriteContext.pluginApi());
+                    } catch (PluginPropertyWriteException terminal) {
+                        assertEquals(PluginPropertyWriteOutcome.PREPARER_UNAVAILABLE,
+                                terminal.getOutcome());
+                    }
+                    return null;
+                });
+                close.get(2, TimeUnit.SECONDS);
+                detach.get(2, TimeUnit.SECONDS);
+                activate.get(2, TimeUnit.SECONDS);
+                assertEquals(PluginPropertyPreparers.State.CLOSED, registration.getState());
+                assertTrue(hookCalls.get() <= 1);
+                Object nextOwner = new Object();
+                var replacement = PluginPropertyPreparers.register("detach-race", nextOwner,
+                        noChangePreparer());
+                replacement.activate();
+                registration.unregister();
+                registration.close();
+                assertThrows(IllegalStateException.class, registration::activate);
+                assertThrows(IllegalStateException.class, registration::activateRecoveryOnly);
+                assertTrue(PluginPropertyPreparers.isOperational("detach-race", nextOwner));
+                replacement.close();
+            }
+        } finally {
+            workers.shutdownNow();
+        }
+    }
+
+    @Test(timeout = 5000)
+    public void legacyCloseHookDoesNotHoldTheEntryMonitorAgainstUnregister() throws Exception {
+        AtomicReference<PluginPropertyPreparers.PreparerRegistration> owner = new AtomicReference<>();
+        owner.set(PluginPropertyPreparers.register("close-detach", this,
+                new PreparePluginPropertiesInterface() {
+            @Override
+            public PreparedPluginProperties prepare(Properties incoming, boolean merge,
+                    PropertyWriteContext context) {
+                return new PreparedPluginProperties(new Properties(), NoChange.INSTANCE,
+                        (outcome, failure) -> { });
+            }
+            @Override
+            public void close() throws Exception {
+                FutureTask<Void> detach = new FutureTask<>(() -> {
+                    owner.get().unregister();
+                    return null;
+                });
+                Thread worker = new Thread(detach);
+                worker.setDaemon(true);
+                worker.start();
+                detach.get(2, TimeUnit.SECONDS);
+            }
+        }));
+        owner.get().close();
+        assertEquals(PluginPropertyPreparers.State.CLOSED, owner.get().getState());
+    }
+
     @Test
     public void statesAdmitOnlyTheirTrustedOriginAndPurpose() throws Exception {
         PluginPropertyPreparers.PreparerRegistration registration =

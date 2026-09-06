@@ -85,6 +85,16 @@ public final class PluginPropertyPreparers {
             entry.transition(State.INITIALIZING, State.RECOVERY_ONLY);
         }
 
+        /**
+         * Gates new invocations and removes this exact registration without waiting
+         * for admitted prepares or invoking the close hook. The caller owns bounded
+         * preparer cleanup; admitted callbacks retain their existing invocation lease.
+         * Repeated calls, including after replacement, are harmless.
+         */
+        public void unregister() {
+            entry.unregister();
+        }
+
         @Override
         public void close() {
             entry.close();
@@ -158,6 +168,11 @@ public final class PluginPropertyPreparers {
                 throw new IllegalStateException("invalid_property_preparer_transition");
             }
             state = State.ACTIVE;
+        }
+
+        private synchronized void unregister() {
+            state = State.CLOSED;
+            ENTRIES.remove(pluginPoint, this);
         }
 
         private void close() {
