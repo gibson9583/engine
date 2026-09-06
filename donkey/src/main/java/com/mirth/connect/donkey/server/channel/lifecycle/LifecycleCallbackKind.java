@@ -18,5 +18,12 @@ public enum LifecycleCallbackKind {
     HANDOFF_CANCELLED,
     HANDOFFS_ABANDONED,
     STATUS_CHANGED,
-    HANDLE_END
+    /** Aggregate compatibility view of all six operation-end kinds. */
+    HANDLE_END,
+    DISPATCH_END,
+    PROCESS_END,
+    FILTER_TRANSFORMER_END,
+    DESTINATION_CHAIN_END,
+    DESTINATION_QUEUE_END,
+    SEND_END
 }

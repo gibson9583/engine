@@ -359,7 +359,7 @@ public final class MessageLifecycleListeners {
                 registration.releaseLease();
             }
             if (handle != null && handle != LifecycleHandle.NOOP) {
-                handles[count++] = new HandleEntry(registration, handle);
+                handles[count++] = new HandleEntry(registration, handle, endKind(kind));
             }
         }
         if (count == 0) {
@@ -532,6 +532,18 @@ public final class MessageLifecycleListeners {
         }
     }
 
+    private static LifecycleCallbackKind endKind(LifecycleCallbackKind startKind) {
+        switch (startKind) {
+            case DISPATCH_START: return LifecycleCallbackKind.DISPATCH_END;
+            case PROCESS_START: return LifecycleCallbackKind.PROCESS_END;
+            case FILTER_TRANSFORMER_START: return LifecycleCallbackKind.FILTER_TRANSFORMER_END;
+            case DESTINATION_CHAIN_START: return LifecycleCallbackKind.DESTINATION_CHAIN_END;
+            case DESTINATION_QUEUE_START: return LifecycleCallbackKind.DESTINATION_QUEUE_END;
+            case SEND_START: return LifecycleCallbackKind.SEND_END;
+            default: throw new IllegalArgumentException("unpaired lifecycle callback");
+        }
+    }
+
     private Throwable endHandle(HandleEntry entry, LifecycleResult result) {
         long started = nanoClock.getAsLong();
         Throwable callbackFailure = null;
@@ -541,7 +553,7 @@ public final class MessageLifecycleListeners {
             callbackFailure = failure;
         }
         Throwable abandonmentFatal = recordCompletion(entry.registration,
-                LifecycleCallbackKind.HANDLE_END, started, callbackFailure, true);
+                entry.endKind, started, callbackFailure, true);
         return resolveFatal(callbackFailure, abandonmentFatal);
     }
 
@@ -759,6 +771,17 @@ public final class MessageLifecycleListeners {
         }
 
         synchronized LifecycleCallbackHealth getCallbackHealth(LifecycleCallbackKind kind) {
+            if (kind == LifecycleCallbackKind.HANDLE_END) {
+                long invocations = 0L, failures = 0L, slowCalls = 0L, maximum = 0L;
+                for (LifecycleCallbackKind endKind : OPERATION_END_KINDS) {
+                    CallbackStats ended = callbackStats[endKind.ordinal()];
+                    invocations = saturatingCount(invocations, ended.invocationCount);
+                    failures = saturatingCount(failures, ended.failureCount);
+                    slowCalls = saturatingCount(slowCalls, ended.slowInvocationCount);
+                    maximum = Math.max(maximum, ended.maximumDurationNanos);
+                }
+                return new LifecycleCallbackHealth(kind, invocations, failures, slowCalls, maximum);
+            }
             CallbackStats stats = callbackStats[kind.ordinal()];
             return new LifecycleCallbackHealth(kind, stats.invocationCount, stats.failureCount,
                     stats.slowInvocationCount, stats.maximumDurationNanos);
@@ -773,6 +796,16 @@ public final class MessageLifecycleListeners {
             stats.lastWarningNanos = now;
             return true;
         }
+    }
+
+    private static final LifecycleCallbackKind[] OPERATION_END_KINDS = {
+        LifecycleCallbackKind.DISPATCH_END, LifecycleCallbackKind.PROCESS_END,
+        LifecycleCallbackKind.FILTER_TRANSFORMER_END, LifecycleCallbackKind.DESTINATION_CHAIN_END,
+        LifecycleCallbackKind.DESTINATION_QUEUE_END, LifecycleCallbackKind.SEND_END
+    };
+
+    private static long saturatingCount(long left, long right) {
+        return left > Long.MAX_VALUE - right ? Long.MAX_VALUE : left + right;
     }
 
     private static final class CallbackStats {
@@ -827,10 +860,12 @@ public final class MessageLifecycleListeners {
     private static final class HandleEntry {
         private final Registration registration;
         private final LifecycleHandle handle;
+        private final LifecycleCallbackKind endKind;
 
-        private HandleEntry(Registration registration, LifecycleHandle handle) {
+        private HandleEntry(Registration registration, LifecycleHandle handle, LifecycleCallbackKind endKind) {
             this.registration = registration;
             this.handle = handle;
+            this.endKind = endKind;
         }
     }
 }

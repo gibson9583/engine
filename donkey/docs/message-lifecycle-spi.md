@@ -74,3 +74,17 @@ query the controller/database from the callback.
 `HandoffInfo.getCreateReason()` copies a closed `HandoffCreateReason` from the actual transfer boundary. Source insertion uses `SOURCE_ENQUEUE`, executor submission uses `ASYNC_CHAIN_SUBMIT`, and initial destination insertion uses `DESTINATION_ENQUEUE`. A retained destination-queue attempt uses `DESTINATION_RETRY`; release for rotation uses `DESTINATION_ROTATION`. `DESTINATION_REQUEUE` is available for an explicit requeue producer; it is not inferred from attempt counts or message identity.
 
 The destination queue freezes its rotation decision once and uses that same decision for reason metadata and eventual carrier transfer after DAO cleanup. Cancelled or failed transfers keep the existing exact receipt cancellation semantics. A reason must match its handoff kind. The original four-argument constructor remains a convenience for initial enqueue/submission; production retry and rotation sites pass their reason explicitly.
+
+## Callback health
+
+`LifecycleListenerRegistration.getCallbackHealth` returns invocation, failure, slow-call,
+and maximum-duration statistics for the selected callback. Paired ends retain their start's
+operation kind: `DISPATCH_END`, `PROCESS_END`, `FILTER_TRANSFORMER_END`,
+`DESTINATION_CHAIN_END`, `DESTINATION_QUEUE_END`, or `SEND_END`. These counts include
+retained handles ended after unregister/quarantine and handles unwound after a fatal sibling
+start. Repeated aggregate end calls add no extra sample.
+
+`HANDLE_END` remains a compatibility aggregate: counts are the sum of the six end kinds and
+maximum duration is their maximum. Consumers must use either that aggregate or the individual
+end kinds when computing totals. The aggregate is calculated at read time and does not add a
+second failure to the quarantine streak.

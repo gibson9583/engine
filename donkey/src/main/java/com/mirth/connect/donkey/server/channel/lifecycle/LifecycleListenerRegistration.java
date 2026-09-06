@@ -39,6 +39,10 @@ public final class LifecycleListenerRegistration {
         return registration.getConsecutiveFailureCount();
     }
 
+    /**
+     * Returns exact callback health. HANDLE_END is a compatibility aggregate of the six
+     * operation-end kinds; callers must not add it to those individual kinds again.
+     */
     public LifecycleCallbackHealth getCallbackHealth(LifecycleCallbackKind callbackKind) {
         return registration.getCallbackHealth(
                 Objects.requireNonNull(callbackKind, "callbackKind"));
