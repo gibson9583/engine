@@ -10,13 +10,23 @@ import java.util.Objects;
 /** Immutable target and discriminator for one asynchronous transfer. */
 public final class HandoffInfo {
     private final HandoffKind kind;
+    private final HandoffCreateReason createReason;
     private final MessageInfo message;
     private final Integer chainId;
     private final Long nextSendAttempt;
 
     public HandoffInfo(HandoffKind kind, MessageInfo message, Integer chainId,
             Long nextSendAttempt) {
+        this(kind, message, chainId, nextSendAttempt, initialReason(kind));
+    }
+
+    public HandoffInfo(HandoffKind kind, MessageInfo message, Integer chainId,
+            Long nextSendAttempt, HandoffCreateReason createReason) {
         this.kind = Objects.requireNonNull(kind, "kind");
+        this.createReason = Objects.requireNonNull(createReason, "createReason");
+        if (createReason.getKind() != kind) {
+            throw new IllegalArgumentException("createReason must match handoff kind");
+        }
         this.message = Objects.requireNonNull(message, "message");
         switch (kind) {
             case SOURCE_QUEUE:
@@ -59,6 +69,20 @@ public final class HandoffInfo {
 
     public HandoffKind getKind() {
         return kind;
+    }
+
+    public HandoffCreateReason getCreateReason() {
+        return createReason;
+    }
+
+    /** The compatibility constructor describes initial enqueue/submission only. */
+    private static HandoffCreateReason initialReason(HandoffKind kind) {
+        switch (Objects.requireNonNull(kind, "kind")) {
+            case SOURCE_QUEUE: return HandoffCreateReason.SOURCE_ENQUEUE;
+            case ASYNC_CHAIN: return HandoffCreateReason.ASYNC_CHAIN_SUBMIT;
+            case DESTINATION_QUEUE: return HandoffCreateReason.DESTINATION_ENQUEUE;
+            default: throw new IllegalArgumentException("unsupported handoff kind");
+        }
     }
 
     public MessageInfo getMessage() {

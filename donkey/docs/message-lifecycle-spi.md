@@ -68,3 +68,9 @@ notification. The surrounding transaction may still fail or roll back. A listene
 status event as observed and use `LifecycleOutcome.ROLLED_BACK` on the enclosing handle result to
 represent that later outcome. It must not label the status notification as committed or try to
 query the controller/database from the callback.
+
+## Handoff creation reasons
+
+`HandoffInfo.getCreateReason()` copies a closed `HandoffCreateReason` from the actual transfer boundary. Source insertion uses `SOURCE_ENQUEUE`, executor submission uses `ASYNC_CHAIN_SUBMIT`, and initial destination insertion uses `DESTINATION_ENQUEUE`. A retained destination-queue attempt uses `DESTINATION_RETRY`; release for rotation uses `DESTINATION_ROTATION`. `DESTINATION_REQUEUE` is available for an explicit requeue producer; it is not inferred from attempt counts or message identity.
+
+The destination queue freezes its rotation decision once and uses that same decision for reason metadata and eventual carrier transfer after DAO cleanup. Cancelled or failed transfers keep the existing exact receipt cancellation semantics. A reason must match its handoff kind. The original four-argument constructor remains a convenience for initial enqueue/submission; production retry and rotation sites pass their reason explicitly.

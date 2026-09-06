@@ -352,6 +352,171 @@ public class MessageLifecycleHooksTest {
     }
 
     @Test
+    public void heldRetryHasExplicitReasonAndRetainsCarrier() throws Exception {
+        assertRetryDisposition(false, false);
+    }
+
+    @Test
+    public void rotationHasExplicitReasonAndReleasesCarrier() throws Exception {
+        assertRetryDisposition(true, false);
+    }
+
+    @Test
+    public void rotationDecisionSurvivesCallbackChangingConfiguration() throws Exception {
+        assertRetryDisposition(true, true);
+    }
+
+    @Test
+    public void heldRetryDecisionSurvivesCallbackChangingConfiguration() throws Exception {
+        assertRetryDisposition(false, true);
+    }
+
+    @Test
+    public void committedRotationSurvivesDaoCloseFailure() throws Exception {
+        assertRetryDisposition(true, false, true);
+    }
+
+    @Test
+    public void committedHeldRetrySurvivesDaoCloseFailure() throws Exception {
+        assertRetryDisposition(false, false, true);
+    }
+
+    private void assertRetryDisposition(boolean rotate, boolean flipDuringCreation) throws Exception {
+        assertRetryDisposition(rotate, flipDuringCreation, false);
+    }
+
+    private void assertRetryDisposition(boolean rotate, boolean flipDuringCreation,
+            boolean failDaoClose) throws Exception {
+        AtomicInteger sends = new AtomicInteger();
+        channel = channelWithDestination(true, new TestDestinationConnector() {
+            @Override
+            public Response send(com.mirth.connect.donkey.model.channel.ConnectorProperties props,
+                    ConnectorMessage message) {
+                return new Response(sends.incrementAndGet() < 3 ? Status.QUEUED : Status.SENT,
+                        "response");
+            }
+        }, properties -> {
+            properties.setQueueEnabled(true);
+            properties.setSendFirst(true);
+            properties.setRetryCount(0);
+            properties.setRetryIntervalMillis(1);
+            properties.setRotate(rotate);
+        });
+        var destination = destination(channel, 0);
+        List<Boolean> retainedAtEnd = new CopyOnWriteArrayList<>();
+        listener.endObserver = scope -> {
+            if (scope.kind == Kind.QUEUE && scope.message.getSendAttempts() == 1) {
+                retainedAtEnd.add(destination.getQueue().isCheckedOut(scope.message.getMessageId()));
+            }
+        };
+        listener.handoffObserver = info -> {
+            if (flipDuringCreation && info.getKind() == HandoffKind.DESTINATION_QUEUE
+                    && info.getNextSendAttempt() == 3) {
+                ((TestConnectorProperties) destination.getConnectorProperties())
+                        .getDestinationConnectorProperties().setRotate(!rotate);
+            }
+        };
+        deployAndStart();
+        AtomicInteger closeFailures = new AtomicInteger();
+        if (failDaoClose) {
+            Field daoFactoryField = com.mirth.connect.donkey.server.channel.DestinationConnector.class
+                    .getDeclaredField("daoFactory");
+            daoFactoryField.setAccessible(true);
+            Object originalFactory = daoFactoryField.get(destination);
+            daoFactoryField.set(destination, java.lang.reflect.Proxy.newProxyInstance(
+                    getClass().getClassLoader(),
+                    new Class<?>[] {com.mirth.connect.donkey.server.data.DonkeyDaoFactory.class},
+                    (proxy, method, args) -> {
+                        Object returned;
+                        try {
+                            returned = method.invoke(originalFactory, args);
+                        } catch (java.lang.reflect.InvocationTargetException failure) {
+                            throw failure.getCause();
+                        }
+                        if (!method.getName().equals("getDao")) return returned;
+                        return java.lang.reflect.Proxy.newProxyInstance(getClass().getClassLoader(),
+                                new Class<?>[] {com.mirth.connect.donkey.server.data.DonkeyDao.class},
+                                (daoProxy, daoMethod, daoArgs) -> {
+                                    Object daoResult;
+                                    try {
+                                        daoResult = daoMethod.invoke(returned, daoArgs);
+                                    } catch (java.lang.reflect.InvocationTargetException failure) {
+                                        throw failure.getCause();
+                                    }
+                                    if (daoMethod.getName().equals("close")
+                                            && closeFailures.compareAndSet(0, 1)) {
+                                        throw new IllegalStateException("injected close after committed queue attempt");
+                                    }
+                                    return daoResult;
+                                });
+                    }));
+        }
+        ((TestSourceConnector) channel.getSourceConnector()).readTestMessage(TestUtils.TEST_HL7_MESSAGE);
+        listener.awaitEnded(Kind.QUEUE, 2);
+        assertEquals(failDaoClose ? 1 : 0, closeFailures.get());
+        assertEquals(2, listener.handoffs.size());
+        assertEquals(com.mirth.connect.donkey.server.channel.lifecycle.HandoffCreateReason.DESTINATION_ENQUEUE,
+                listener.handoffs.get(0).info.getCreateReason());
+        assertEquals(rotate
+                ? com.mirth.connect.donkey.server.channel.lifecycle.HandoffCreateReason.DESTINATION_ROTATION
+                : com.mirth.connect.donkey.server.channel.lifecycle.HandoffCreateReason.DESTINATION_RETRY,
+                listener.handoffs.get(1).info.getCreateReason());
+        assertEquals(Arrays.asList(!rotate), retainedAtEnd);
+        listener.assertEveryHandoffSettledOnce();
+        listener.assertEveryStartEndedOnce();
+    }
+
+    @Test
+    public void stoppedRotatingQueueStillReleasesItsAcquiredCarrier() throws Exception {
+        assertStoppedRotationReleasesCarrier(false);
+    }
+
+    @Test
+    public void interruptedRotatingQueueStillReleasesItsAcquiredCarrier() throws Exception {
+        assertStoppedRotationReleasesCarrier(true);
+    }
+
+    private void assertStoppedRotationReleasesCarrier(boolean interrupt) throws Exception {
+        AtomicInteger sends = new AtomicInteger();
+        channel = channelWithDestination(true, new TestDestinationConnector() {
+            @Override
+            public Response send(com.mirth.connect.donkey.model.channel.ConnectorProperties props,
+                    ConnectorMessage message) {
+                if (sends.incrementAndGet() == 2) {
+                    if (interrupt) {
+                        MessageLifecycleHooksTest.<RuntimeException>throwForTest(
+                                new InterruptedException("injected connector interruption"));
+                    } else {
+                        updateCurrentState(com.mirth.connect.donkey.model.channel.DeployedState.STOPPING);
+                    }
+                }
+                return new Response(Status.QUEUED, "response");
+            }
+        }, properties -> {
+            properties.setQueueEnabled(true);
+            properties.setSendFirst(true);
+            properties.setRetryCount(0);
+            properties.setRetryIntervalMillis(1);
+            properties.setRotate(true);
+        });
+        deployAndStart();
+        ((TestSourceConnector) channel.getSourceConnector()).readTestMessage(TestUtils.TEST_HL7_MESSAGE);
+        listener.awaitEnded(Kind.QUEUE, 1);
+        assertEquals(1, listener.handoffs.size());
+        assertFalse("A rotating queue must release its acquired carrier even when stopping",
+                destination(channel, 0).getQueue().isCheckedOut(listener.sources.get(0).getMessageId()));
+        listener.assertEveryHandoffSettledOnce();
+        listener.assertEveryStartEndedOnce();
+    }
+
+    // TestDestinationConnector narrows the production send() throws clause; preserve
+    // the actual checked exception so this test exercises the production catch branch.
+    @SuppressWarnings("unchecked")
+    private static <T extends Throwable> void throwForTest(Throwable failure) throws T {
+        throw (T) failure;
+    }
+
+    @Test
     public void rejectedAsyncChainSubmissionCancelsHandoffAndEndsInterruptedScopes()
             throws Exception {
         channel = defaultChannel(true, 2);
@@ -453,6 +618,8 @@ public class MessageLifecycleHooksTest {
     }
 
     private static final class RecordingListener implements MessageLifecycleListener {
+        private java.util.function.Consumer<HandoffInfo> handoffObserver = info -> {};
+        private java.util.function.Consumer<Scope> endObserver = scope -> {};
         private final List<Scope> scopes = new CopyOnWriteArrayList<Scope>();
         private final List<MessageInfo> sources = new CopyOnWriteArrayList<MessageInfo>();
         private final List<HandoffRecord> handoffs = new CopyOnWriteArrayList<HandoffRecord>();
@@ -518,6 +685,7 @@ public class MessageLifecycleHooksTest {
         public HandoffReceipt onHandoffCreated(HandoffInfo handoff) {
             Receipt receipt = new Receipt();
             handoffs.add(new HandoffRecord(handoff, receipt));
+            handoffObserver.accept(handoff);
             return receipt;
         }
 
@@ -548,6 +716,7 @@ public class MessageLifecycleHooksTest {
             return result -> {
                 scope.result = result;
                 scope.endThread = Thread.currentThread().getId();
+                endObserver.accept(scope);
                 scope.ends.incrementAndGet();
                 if (kind == Kind.QUEUE) {
                     queueDepth.set(queueDepth.get() - 1);

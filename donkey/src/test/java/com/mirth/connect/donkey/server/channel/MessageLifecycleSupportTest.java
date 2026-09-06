@@ -32,6 +32,41 @@ import com.mirth.connect.donkey.server.data.DonkeyDao;
 
 public class MessageLifecycleSupportTest {
     @Test
+    public void transferCallbackCarriesItsExplicitReasonRatherThanInferringFromAttempts() {
+        var listeners = MessageLifecycleSupport.listeners();
+        var observed = new java.util.concurrent.atomic.AtomicReference<
+                com.mirth.connect.donkey.server.channel.lifecycle.HandoffInfo>();
+        var registration = listeners.register(new MessageLifecycleListener() {
+            @Override
+            public com.mirth.connect.donkey.server.channel.lifecycle.HandoffReceipt onHandoffCreated(
+                    com.mirth.connect.donkey.server.channel.lifecycle.HandoffInfo info) {
+                observed.set(info);
+                return com.mirth.connect.donkey.server.channel.lifecycle.HandoffReceipt.NOOP;
+            }
+        });
+        try {
+            for (var reason : com.mirth.connect.donkey.server.channel.lifecycle.HandoffCreateReason.values()) {
+                var kind = reason.getKind();
+                boolean source = kind == com.mirth.connect.donkey.server.channel.lifecycle.HandoffKind.SOURCE_QUEUE;
+                ConnectorMessage message = new ConnectorMessage("channel", "Channel", 7L,
+                        source ? 0 : 1, "server", Calendar.getInstance(), Status.QUEUED);
+                message.setConnectorName(source ? "source" : "destination");
+                message.setChainId(source ? 0 : 1);
+                // Identical attempt count across all destination reasons proves no inference.
+                message.setSendAttempts(4);
+                var token = listeners.captureToken();
+                MessageLifecycleSupport.initialize(message, token,
+                        listeners.allocateMessageIncarnationId(token), "HTTP Sender", ExecutionMode.SYNCHRONOUS);
+                MessageLifecycleSupport.createHandoff(message, kind, reason);
+                assertSame(reason, observed.get().getCreateReason());
+                assertEquals(4, observed.get().getMessage().getSendAttempts());
+            }
+        } finally {
+            registration.unregister();
+        }
+    }
+
+    @Test
     public void snapshotDoesNotChangeWhenMutableEngineMessageChanges() {
         MessageLifecycleListeners listeners = new MessageLifecycleListeners();
         listeners.register(new MessageLifecycleListener() {});

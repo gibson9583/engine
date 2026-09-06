@@ -21,6 +21,7 @@ import com.mirth.connect.donkey.server.channel.lifecycle.FailureInfo;
 import com.mirth.connect.donkey.server.channel.lifecycle.HandoffBundle;
 import com.mirth.connect.donkey.server.channel.lifecycle.HandoffInfo;
 import com.mirth.connect.donkey.server.channel.lifecycle.HandoffKind;
+import com.mirth.connect.donkey.server.channel.lifecycle.HandoffCreateReason;
 import com.mirth.connect.donkey.server.channel.lifecycle.LifecycleDispatchToken;
 import com.mirth.connect.donkey.server.channel.lifecycle.LifecycleOutcome;
 import com.mirth.connect.donkey.server.channel.lifecycle.LifecycleResult;
@@ -167,7 +168,8 @@ final class MessageLifecycleSupport {
         }
     }
 
-    static HandoffBundle createHandoff(ConnectorMessage message, HandoffKind kind) {
+    static HandoffBundle createHandoff(ConnectorMessage message, HandoffKind kind,
+            HandoffCreateReason createReason) {
         if (!isEnabled(message)) {
             return null;
         }
@@ -179,7 +181,7 @@ final class MessageLifecycleSupport {
         Long nextAttempt = kind == HandoffKind.DESTINATION_QUEUE
                 ? nextAttempt(message) : null;
         return listeners().createHandoffs(message.getLifecycleDispatchToken(),
-                new HandoffInfo(kind, snapshot, chainId, nextAttempt));
+                new HandoffInfo(kind, snapshot, chainId, nextAttempt, createReason));
     }
 
     static void throwIfFatal(Throwable throwable) {

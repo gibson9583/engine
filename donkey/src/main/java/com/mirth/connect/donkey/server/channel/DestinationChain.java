@@ -31,6 +31,7 @@ import com.mirth.connect.donkey.server.channel.lifecycle.HandoffBundle;
 import com.mirth.connect.donkey.server.channel.lifecycle.HandoffCancellationBatch;
 import com.mirth.connect.donkey.server.channel.lifecycle.HandoffCancellationReason;
 import com.mirth.connect.donkey.server.channel.lifecycle.HandoffKind;
+import com.mirth.connect.donkey.server.channel.lifecycle.HandoffCreateReason;
 import com.mirth.connect.donkey.server.channel.lifecycle.LifecycleHandle;
 import com.mirth.connect.donkey.server.channel.lifecycle.MessageInfo;
 import com.mirth.connect.donkey.util.ThreadUtils;
@@ -266,7 +267,7 @@ public class DestinationChain implements Callable<List<ConnectorMessage>> {
                 } else {
                     message.setLifecycleExecutionMode(ExecutionMode.DESTINATION_QUEUE);
                     HandoffBundle queueHandoff = MessageLifecycleSupport.createHandoff(message,
-                            HandoffKind.DESTINATION_QUEUE);
+                            HandoffKind.DESTINATION_QUEUE, HandoffCreateReason.DESTINATION_ENQUEUE);
                     HandoffCancellationBatch[] handoffCancellations = null;
                     boolean handoffTransferred = false;
                     boolean offerAttempted = false;

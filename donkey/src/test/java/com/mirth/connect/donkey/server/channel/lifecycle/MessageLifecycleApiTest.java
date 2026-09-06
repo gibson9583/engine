@@ -37,12 +37,40 @@ public class MessageLifecycleApiTest {
             InboundTraceParent.class, MessageLineage.class, MessageInfo.class, ProcessInfo.class,
             ChainInfo.class, QueueInfo.class, SendInfo.class, ExecutionMode.class,
             LifecycleOutcome.class, FailureCategory.class, FailureInfo.class,
-            LifecycleResult.class, StatusChangeInfo.class, HandoffKind.class, HandoffInfo.class,
+            LifecycleResult.class, StatusChangeInfo.class, HandoffKind.class, HandoffCreateReason.class, HandoffInfo.class,
             HandoffCancellationReason.class, HandoffCancellation.class,
             HandoffAbandonReason.class, LifecycleCallbackKind.class,
             LifecycleCallbackHealth.class, LifecycleListenerRegistration.class,
             LifecycleDispatchToken.class, HandoffBundle.class, HandoffCancellationBatch.class,
             MessageLifecycleListeners.class));
+
+    @Test
+    public void handoffCreationReasonIsClosedAndMustMatchItsTransferKind() {
+        for (HandoffKind kind : HandoffKind.values()) {
+            for (HandoffCreateReason reason : HandoffCreateReason.values()) {
+                MessageInfo target = kind == HandoffKind.SOURCE_QUEUE
+                        ? sourceMessage(Status.QUEUED) : message(Status.QUEUED, 1);
+                Integer chain = kind == HandoffKind.ASYNC_CHAIN ? 1 : null;
+                Long attempt = kind == HandoffKind.DESTINATION_QUEUE ? 1L : null;
+                if (reason.getKind() == kind) {
+                    HandoffInfo info = new HandoffInfo(kind, target, chain, attempt, reason);
+                    assertSame(reason, info.getCreateReason());
+                    assertSame(kind, info.getKind());
+                } else {
+                    expectIllegalArgument(() -> new HandoffInfo(kind, target, chain, attempt, reason));
+                }
+            }
+        }
+        assertSame(HandoffCreateReason.SOURCE_ENQUEUE,
+                new HandoffInfo(HandoffKind.SOURCE_QUEUE, sourceMessage(Status.QUEUED), null, null)
+                        .getCreateReason());
+        assertSame(HandoffCreateReason.ASYNC_CHAIN_SUBMIT,
+                new HandoffInfo(HandoffKind.ASYNC_CHAIN, message(Status.QUEUED, 1), 1, null)
+                        .getCreateReason());
+        assertSame(HandoffCreateReason.DESTINATION_ENQUEUE,
+                new HandoffInfo(HandoffKind.DESTINATION_QUEUE, message(Status.QUEUED, 1), null, 1L)
+                        .getCreateReason());
+    }
 
     @Test
     public void publicApiUsesOnlyClosedContentFreeTypes() {
@@ -208,7 +236,7 @@ public class MessageLifecycleApiTest {
                 MessageLineage.class, DispatchInfo.class, MessageInfo.class, ExecutionMode.class,
                 ProcessInfo.class, ChainInfo.class, QueueInfo.class, SendInfo.class,
                 LifecycleOutcome.class, FailureCategory.class, FailureInfo.class,
-                LifecycleResult.class, StatusChangeInfo.class, HandoffKind.class,
+                LifecycleResult.class, StatusChangeInfo.class, HandoffKind.class, HandoffCreateReason.class,
                 HandoffInfo.class, HandoffCancellationReason.class, HandoffCancellation.class,
                 HandoffAbandonReason.class, LifecycleCallbackKind.class,
                 LifecycleCallbackHealth.class, LifecycleListenerRegistration.class,

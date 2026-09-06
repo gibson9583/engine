@@ -82,6 +82,7 @@ import com.mirth.connect.donkey.server.channel.lifecycle.HandoffBundle;
 import com.mirth.connect.donkey.server.channel.lifecycle.HandoffCancellationBatch;
 import com.mirth.connect.donkey.server.channel.lifecycle.HandoffCancellationReason;
 import com.mirth.connect.donkey.server.channel.lifecycle.HandoffKind;
+import com.mirth.connect.donkey.server.channel.lifecycle.HandoffCreateReason;
 import com.mirth.connect.donkey.server.channel.lifecycle.InboundParentState;
 import com.mirth.connect.donkey.server.channel.lifecycle.LifecycleDispatchToken;
 import com.mirth.connect.donkey.server.channel.lifecycle.LifecycleHandle;
@@ -1370,7 +1371,7 @@ public class Channel implements Runnable {
                 } else {
                     sourceMessage.setLifecycleExecutionMode(ExecutionMode.SOURCE_QUEUE);
                     HandoffBundle sourceHandoff = MessageLifecycleSupport.createHandoff(
-                            sourceMessage, HandoffKind.SOURCE_QUEUE);
+                            sourceMessage, HandoffKind.SOURCE_QUEUE, HandoffCreateReason.SOURCE_ENQUEUE);
                     HandoffCancellationBatch[] handoffCancellations = null;
                     boolean handoffTransferred = false;
                     boolean offerAttempted = false;
@@ -2030,7 +2031,7 @@ public class Channel implements Runnable {
                     ConnectorMessage chainMessage = destinationMessages.get(
                             chain.getEnabledMetaDataIds().get(0));
                     HandoffBundle chainHandoff = MessageLifecycleSupport.createHandoff(
-                            chainMessage, HandoffKind.ASYNC_CHAIN);
+                            chainMessage, HandoffKind.ASYNC_CHAIN, HandoffCreateReason.ASYNC_CHAIN_SUBMIT);
                     chain.setLifecycle(ExecutionMode.ASYNC_CHAIN, chainHandoff);
                     DestinationChainFuture task = new DestinationChainFuture(chain);
                     try {

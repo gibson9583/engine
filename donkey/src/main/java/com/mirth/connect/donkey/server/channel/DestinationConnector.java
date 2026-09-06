@@ -52,6 +52,7 @@ import com.mirth.connect.donkey.server.channel.lifecycle.HandoffBundle;
 import com.mirth.connect.donkey.server.channel.lifecycle.HandoffCancellationBatch;
 import com.mirth.connect.donkey.server.channel.lifecycle.HandoffCancellationReason;
 import com.mirth.connect.donkey.server.channel.lifecycle.HandoffKind;
+import com.mirth.connect.donkey.server.channel.lifecycle.HandoffCreateReason;
 import com.mirth.connect.donkey.server.channel.lifecycle.LifecycleHandle;
 import com.mirth.connect.donkey.server.channel.lifecycle.MessageInfo;
 import com.mirth.connect.donkey.server.channel.lifecycle.QueueInfo;
@@ -877,10 +878,17 @@ public abstract class DestinationConnector extends Connector implements Runnable
                                         || getCurrentState() == DeployedState.STARTING)
                                 && !stopQueue.get();
 
+                        // Freeze the disposition used both by the receipt metadata and
+                        // by the eventual queue transfer after DAO cleanup.
+                        boolean rotateNext = !exceptionCaught
+                                && connectorMessage.getStatus() == Status.QUEUED
+                                && destinationConnectorProperties.isRotate();
                         if (queueWillContinue) {
                             try {
                                 nextHandoff = MessageLifecycleSupport.createHandoff(
-                                        connectorMessage, HandoffKind.DESTINATION_QUEUE);
+                                        connectorMessage, HandoffKind.DESTINATION_QUEUE, rotateNext
+                                                ? HandoffCreateReason.DESTINATION_ROTATION
+                                                : HandoffCreateReason.DESTINATION_RETRY);
                                 nextHandoffHandled = nextHandoff == null;
                             } catch (Throwable t) {
                                 finalizationFailure = appendFailure(finalizationFailure, t);
@@ -963,7 +971,7 @@ public abstract class DestinationConnector extends Connector implements Runnable
                             } else if (connectorMessage.getStatus() != Status.QUEUED) {
                                 canAcquire = true;
                                 queue.release(connectorMessage, true);
-                            } else if (destinationConnectorProperties.isRotate()) {
+                            } else if (rotateNext) {
                                 canAcquire = true;
                                 HandoffCancellationBatch[] cancellations;
                                 synchronized (queue) {
