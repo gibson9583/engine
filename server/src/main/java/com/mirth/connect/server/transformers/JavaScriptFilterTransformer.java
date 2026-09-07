@@ -151,7 +151,7 @@ public class JavaScriptFilterTransformer implements FilterTransformer {
                 }
             }
 
-            return JavaScriptUtil.execute(new FilterTransformerTask(contextFactory, message));
+            return JavaScriptUtil.execute(new FilterTransformerTask(contextFactory, message), message.getLifecycleDispatchToken());
         } catch (JavaScriptExecutorException e) {
             Throwable cause = e.getCause();
 

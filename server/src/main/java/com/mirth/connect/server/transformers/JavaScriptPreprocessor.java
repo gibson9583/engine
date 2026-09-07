@@ -121,7 +121,7 @@ public class JavaScriptPreprocessor implements PreProcessor {
                 throw new JavaScriptInitializationException("Error initializing JavaScript Preprocessor", e);
             }
 
-            return JavaScriptUtil.executeJavaScriptPreProcessorTask(new JavaScriptPreProcessorTask(contextFactory, message), message.getChannelId());
+            return JavaScriptUtil.executeJavaScriptPreProcessorTask(new JavaScriptPreProcessorTask(contextFactory, message), message.getChannelId(), message.getLifecycleDispatchToken());
         } catch (InterruptedException e) {
             throw e;
         } catch (Exception e) {

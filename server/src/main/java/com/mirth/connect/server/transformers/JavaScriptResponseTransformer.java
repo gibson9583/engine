@@ -140,7 +140,7 @@ public class JavaScriptResponseTransformer implements ResponseTransformer {
     }
 
     protected String execute(MirthContextFactory contextFactory, Response response, ConnectorMessage connectorMessage) throws JavaScriptExecutorException, InterruptedException {
-        return JavaScriptUtil.execute(new ResponseTransformerTask(contextFactory, response, connectorMessage, scriptId, template, debugOptions));
+        return JavaScriptUtil.execute(new ResponseTransformerTask(contextFactory, response, connectorMessage, scriptId, template, debugOptions), connectorMessage.getLifecycleDispatchToken());
     }
 
     protected void compileAndAddScript(MirthContextFactory contextFactory) throws Exception {

@@ -197,6 +197,141 @@ public final class MessageLifecycleListeners {
                 Objects.requireNonNull(change, "change"));
     }
 
+    /** Captures only the registrations frozen into this message; never captures a newer token. */
+    public ExecutionContextBundle captureExecutionContexts(LifecycleDispatchToken token) {
+        validateToken(token);
+        if (token.isEmpty()) return ExecutionContextBundle.EMPTY;
+        ExecutionEntry[] entries = new ExecutionEntry[token.getRegistrations().length];
+        int count = 0;
+        for (Registration registration : token.getRegistrations()) {
+            if (!registration.tryAcquireLease()) continue;
+            try {
+                long started = nanoClock.getAsLong();
+                LifecycleExecutionContext context = null;
+                Throwable failure = null;
+                try { context = registration.listener.captureExecutionContext(); }
+                catch (Throwable problem) { failure = problem; }
+                Throwable fatal = completeExecution(registration,
+                        LifecycleCallbackKind.EXECUTION_CONTEXT_CAPTURE, started, failure);
+                if (fatal != null) throwExecution(fatal);
+                if (failure == null && registration.isActive() && context != null
+                        && context != LifecycleExecutionContext.NOOP) {
+                    entries[count] = new ExecutionEntry(registration, context);
+                    count++;
+                }
+            } finally { registration.releaseLease(); }
+        }
+        return count == 0 ? ExecutionContextBundle.EMPTY
+                : new ExecutionContextBundle(this, Arrays.copyOf(entries, count));
+    }
+
+    LifecycleExecutionScope attachExecutionContexts(ExecutionEntry[] entries) {
+        // Allocate every ownership slot and the return/rollback guard before foreign attachment.
+        ExecutionScopes scopes = new ExecutionScopes(entries);
+        try {
+            for (int i = 0; i < entries.length; i++) {
+                ExecutionEntry entry = entries[i];
+                Registration registration = entry.registration;
+                if (!registration.tryAcquireLease()) continue;
+                try {
+                    long started = nanoClock.getAsLong();
+                    Throwable failure = null;
+                    try { scopes.attached[i] = entry.context.attach(); }
+                    catch (Throwable problem) { failure = problem; }
+                    Throwable fatal = completeExecution(registration,
+                            LifecycleCallbackKind.EXECUTION_CONTEXT_ATTACH, started, failure);
+                    if (fatal != null) throwExecution(fatal);
+                } finally { registration.releaseLease(); }
+            }
+            return scopes;
+        } catch (RuntimeException | Error original) {
+            Throwable selected = original;
+            try { scopes.close(); }
+            catch (Throwable cleanup) { selected = executionPrimary(selected, cleanup); }
+            throwExecution(selected);
+            throw new AssertionError("unreachable");
+        }
+    }
+
+    /** Callback failures are isolated; internal bookkeeping failures still unwind owned scopes. */
+    private Throwable completeExecution(Registration registration, LifecycleCallbackKind kind,
+            long started, Throwable callbackFailure) {
+        Throwable bookkeeping = null;
+        try { bookkeeping = recordCompletion(registration, kind, started, callbackFailure, true); }
+        catch (Throwable problem) { bookkeeping = problem; }
+        // Preserve chronological fatal priority: callback, completion bookkeeping,
+        // then cause inspection. Inspection can itself throw while allocating metadata.
+        Throwable selected = executionPrimary(callbackFailure, bookkeeping);
+        Throwable inspection;
+        try { inspection = restoreInterrupt(callbackFailure); }
+        catch (Throwable problem) { inspection = problem; }
+        selected = executionPrimary(selected, inspection);
+        return isFatal(selected) ? selected : bookkeeping;
+    }
+
+    private final class ExecutionScopes implements LifecycleExecutionScope {
+        private final ExecutionEntry[] entries;
+        private final LifecycleExecutionScope[] attached;
+        private final Thread worker = Thread.currentThread();
+        private boolean closed;
+        ExecutionScopes(ExecutionEntry[] entries) {
+            this.entries = entries;
+            attached = new LifecycleExecutionScope[entries.length];
+        }
+        @Override public void close() {
+            if (Thread.currentThread() != worker)
+                throw new IllegalStateException("execution_context_owner_thread_required");
+            if (closed) return;
+            closed = true;
+            Throwable selected = null;
+            for (int i = attached.length - 1; i >= 0; i--) {
+                LifecycleExecutionScope scope = attached[i];
+                attached[i] = null;
+                if (scope == null || scope == LifecycleExecutionScope.NOOP) continue;
+                long started = 0L;
+                boolean timed = false;
+                // Timing/metadata failures must not prevent this or any sibling close attempt.
+                try { started = nanoClock.getAsLong(); timed = true; }
+                catch (Throwable problem) { selected = executionPrimary(selected, problem); }
+                Throwable failure = null;
+                try { scope.close(); }
+                catch (Throwable problem) { failure = problem; }
+                try {
+                    Throwable result = timed ? completeExecution(entries[i].registration,
+                            LifecycleCallbackKind.EXECUTION_CONTEXT_CLOSE, started, failure)
+                            : restoreInterrupt(failure);
+                    selected = executionPrimary(selected, result);
+                } catch (Throwable problem) { selected = executionPrimary(selected, problem); }
+            }
+            if (selected != null) throwExecution(selected);
+        }
+    }
+
+    /** First fatal wins, even when adding diagnostic suppression itself cannot allocate. */
+    static Throwable executionPrimary(Throwable previous, Throwable next) {
+        if (previous == null || previous == next) return previous == null ? next : previous;
+        if (next == null) return previous;
+        Throwable selected = !isFatal(previous) && isFatal(next) ? next : previous;
+        try { selected.addSuppressed(selected == next ? previous : next); }
+        catch (Throwable metadata) { if (!isFatal(selected) && isFatal(metadata)) return metadata; }
+        return selected;
+    }
+
+    private static void throwExecution(Throwable failure) {
+        if (failure instanceof Error) throw (Error) failure;
+        if (failure instanceof RuntimeException) throw (RuntimeException) failure;
+        throw new IllegalStateException("execution_context_callback_failed", failure);
+    }
+
+    static final class ExecutionEntry {
+        final Registration registration;
+        final LifecycleExecutionContext context;
+        ExecutionEntry(Registration registration, LifecycleExecutionContext context) {
+            this.registration = registration;
+            this.context = context;
+        }
+    }
+
     public HandoffBundle createHandoffs(LifecycleDispatchToken token, HandoffInfo handoff) {
         validateToken(token);
         Objects.requireNonNull(handoff, "handoff");

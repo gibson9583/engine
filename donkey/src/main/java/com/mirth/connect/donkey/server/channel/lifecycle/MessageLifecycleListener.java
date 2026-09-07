@@ -27,6 +27,16 @@ package com.mirth.connect.donkey.server.channel.lifecycle;
  */
 public interface MessageLifecycleListener {
     /**
+     * Captures only this listener's currently active context before a message-scoped script is
+     * submitted. The engine supplies authority through the original message dispatch token;
+     * implementations must return NOOP without their own active context. The snapshot must be
+     * resource-free as required by LifecycleExecutionContext, including when submission fails.
+     */
+    default LifecycleExecutionContext captureExecutionContext() {
+        return LifecycleExecutionContext.NOOP;
+    }
+
+    /**
      * Begins accepted raw-message dispatch on the source connector's current thread.
      *
      * <p>This callback runs after the stopped-state guard but before dispatch-thread registration

@@ -162,7 +162,7 @@ public class DatabaseDispatcherScript implements DatabaseDispatcherDelegate {
                 }
             }
 
-            return (Response) JavaScriptUtil.execute(new DatabaseDispatcherTask(contextFactory, connectorMessage));
+            return (Response) JavaScriptUtil.execute(new DatabaseDispatcherTask(contextFactory, connectorMessage), connectorMessage.getLifecycleDispatchToken());
         } catch (Exception e) {
             throw new DatabaseDispatcherException("Error executing script " + scriptId, e);
         }

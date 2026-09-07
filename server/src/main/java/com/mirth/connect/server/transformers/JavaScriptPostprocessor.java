@@ -118,7 +118,7 @@ public class JavaScriptPostprocessor implements PostProcessor {
                 throw new JavaScriptInitializationException("Error initializing JavaScript Postprocessor", e);
             }
 
-            return JavaScriptUtil.executeJavaScriptPostProcessorTask(new JavaScriptPostProcessorTask(contextFactory, message), message.getChannelId());
+            return JavaScriptUtil.executeJavaScriptPostProcessorTask(new JavaScriptPostProcessorTask(contextFactory, message), message.getChannelId(), message.getLifecycleDispatchToken());
         } catch (InterruptedException e) {
             throw e;
         } catch (Exception e) {

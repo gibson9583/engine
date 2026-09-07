@@ -205,7 +205,7 @@ public class JavaScriptDispatcher extends DestinationConnector {
 
             eventController.dispatchEvent(new ConnectionStatusEvent(getChannelId(), getMetaDataId(), getDestinationName(), ConnectionStatusEventType.SENDING));
 
-            Response response = JavaScriptUtil.execute(new JavaScriptDispatcherTask(contextFactory, message));
+            Response response = JavaScriptUtil.execute(new JavaScriptDispatcherTask(contextFactory, message), message.getLifecycleDispatchToken());
             response.setValidate(javaScriptDispatcherProperties.getDestinationConnectorProperties().isValidateResponse());
 
             return response;

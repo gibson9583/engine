@@ -70,12 +70,32 @@ public class JavaScriptUtil {
     private static volatile String globalScriptContextFactoryId = null;
     private static String serverId = ControllerFactory.getFactory().createConfigurationController().getServerId();
 
+    public static <T> T execute(JavaScriptTask<T> task,
+            com.mirth.connect.donkey.server.channel.lifecycle.LifecycleDispatchToken token)
+            throws JavaScriptExecutorException, InterruptedException {
+        if (token == null || token.isEmpty()) return execute(task);
+        var transfer = com.mirth.connect.donkey.server.Donkey.getInstance()
+                .getMessageLifecycleListeners().captureExecutionContexts(token);
+        try { return execute(task, () -> transfer.call(task)); }
+        finally { transfer.cancel(); }
+    }
+
     public static <T> T execute(JavaScriptTask<T> task) throws JavaScriptExecutorException, InterruptedException {
-        Future<T> future = executor.submit(task);
+        return execute(task, task);
+    }
+
+    private static <T> T execute(JavaScriptTask<T> task, java.util.concurrent.Callable<T> operation)
+            throws JavaScriptExecutorException, InterruptedException {
+        Future<T> future = executor.submit(operation);
 
         try {
             return future.get();
         } catch (ExecutionException e) {
+            // New lifecycle callbacks preserve the registry fatal contract across Future.get.
+            if (operation != task) {
+                if (e.getCause() instanceof VirtualMachineError) throw (VirtualMachineError) e.getCause();
+                if (e.getCause() instanceof ThreadDeath) throw (ThreadDeath) e.getCause();
+            }
             throw new JavaScriptExecutorException(e.getCause());
         } catch (InterruptedException e) {
             // synchronize with JavaScriptTask.executeScript() so that it will not initialize the context while we are halting the task
@@ -95,6 +115,7 @@ public class JavaScriptUtil {
     }
 
     public static String executeAttachmentScript(MirthContextFactory contextFactory, RawMessage message, final String channelId, final String channelName, final List<Attachment> attachments) throws InterruptedException, AttachmentException, JavaScriptExecutorException {
+        final var lifecycleToken = message.getLifecycleDispatchToken();
         final boolean isBinary = message.isBinary();
         if (isBinary) {
             try {
@@ -123,7 +144,7 @@ public class JavaScriptUtil {
                         Context.exit();
                     }
                 }
-            });
+            }, lifecycleToken);
         } catch (JavaScriptExecutorException e) {
             logScriptError(ScriptController.ATTACHMENT_SCRIPT_KEY, channelId, e.getCause());
             throw e;
@@ -150,11 +171,15 @@ public class JavaScriptUtil {
      * @throws JavaScriptExecutorException
      */
     public static String executeJavaScriptPreProcessorTask(JavaScriptTask<Object> task, String channelId) throws InterruptedException, JavaScriptExecutorException {
+        return executeJavaScriptPreProcessorTask(task, channelId, null);
+    }
+
+    public static String executeJavaScriptPreProcessorTask(JavaScriptTask<Object> task, String channelId, com.mirth.connect.donkey.server.channel.lifecycle.LifecycleDispatchToken token) throws InterruptedException, JavaScriptExecutorException {
         String channelScriptId = ScriptController.getScriptId(ScriptController.PREPROCESSOR_SCRIPT_KEY, channelId);
 
         // Only execute the task if the channel or global scripts exist
         if (compiledScriptCache.getCompiledScript(channelScriptId) != null || compiledScriptCache.getCompiledScript(ScriptController.PREPROCESSOR_SCRIPT_KEY) != null) {
-            return (String) execute(task);
+            return (String) execute(task, token);
         } else {
             return null;
         }
@@ -252,11 +277,15 @@ public class JavaScriptUtil {
      * @throws JavaScriptExecutorException
      */
     public static Response executeJavaScriptPostProcessorTask(JavaScriptTask<Object> task, String channelId) throws InterruptedException, JavaScriptExecutorException {
+        return executeJavaScriptPostProcessorTask(task, channelId, null);
+    }
+
+    public static Response executeJavaScriptPostProcessorTask(JavaScriptTask<Object> task, String channelId, com.mirth.connect.donkey.server.channel.lifecycle.LifecycleDispatchToken token) throws InterruptedException, JavaScriptExecutorException {
         String channelScriptId = ScriptController.getScriptId(ScriptController.POSTPROCESSOR_SCRIPT_KEY, channelId);
 
         // Only execute the task if the channel or global scripts exist
         if (compiledScriptCache.getCompiledScript(channelScriptId) != null || compiledScriptCache.getCompiledScript(ScriptController.POSTPROCESSOR_SCRIPT_KEY) != null) {
-            return (Response) execute(task);
+            return (Response) execute(task, token);
         } else {
             return null;
         }

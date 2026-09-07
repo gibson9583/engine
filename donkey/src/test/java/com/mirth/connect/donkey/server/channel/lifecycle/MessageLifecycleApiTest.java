@@ -33,7 +33,8 @@ public class MessageLifecycleApiTest {
     private static final Set<Class<?>> SAFE_SIGNATURE_TYPES = new HashSet<Class<?>>(Arrays.asList(
             void.class, boolean.class, int.class, long.class, String.class, Integer.class,
             Long.class, Status.class, MessageLifecycleListener.class, LifecycleHandle.class,
-            HandoffReceipt.class, DispatchInfo.class, InboundParentState.class,
+            HandoffReceipt.class, LifecycleExecutionContext.class, LifecycleExecutionScope.class,
+            ExecutionContextBundle.class, DispatchInfo.class, InboundParentState.class,
             InboundTraceParent.class, MessageLineage.class, MessageInfo.class, ProcessInfo.class,
             ChainInfo.class, QueueInfo.class, SendInfo.class, ExecutionMode.class,
             LifecycleOutcome.class, FailureCategory.class, FailureInfo.class,
@@ -89,6 +90,15 @@ public class MessageLifecycleApiTest {
                                     || method.getName().equals("valueOf"))) {
                         continue;
                     }
+                    if (type == ExecutionContextBundle.class && method.getName().equals("call")) {
+                        // Only the engine's executor helper may accept a task, never a listener/value API.
+                        assertEquals(Object.class, method.getReturnType());
+                        assertTrue(Arrays.equals(new Class<?>[] { java.util.concurrent.Callable.class }, method.getParameterTypes()));
+                        assertEquals(1, method.getTypeParameters().length);
+                        assertEquals("T", method.getGenericReturnType().getTypeName());
+                        assertEquals("java.util.concurrent.Callable<T>", method.getGenericParameterTypes()[0].getTypeName());
+                        continue;
+                    }
                     assertSafe(method.getReturnType());
                     assertSafe(method.getParameterTypes());
                 }
@@ -120,6 +130,9 @@ public class MessageLifecycleApiTest {
                 "HTTP Listener", InboundParentState.ABSENT, null, null);
         HandoffInfo handoff = new HandoffInfo(HandoffKind.SOURCE_QUEUE, source, null, null);
 
+        assertSame(LifecycleExecutionContext.NOOP, listener.captureExecutionContext());
+        assertSame(LifecycleExecutionScope.NOOP, listener.captureExecutionContext().attach());
+        listener.captureExecutionContext().attach().close();
         assertSame(LifecycleHandle.NOOP, listener.onDispatchStart(dispatch));
         listener.onSourceMessageCreated(source);
         assertSame(LifecycleHandle.NOOP,
@@ -232,7 +245,8 @@ public class MessageLifecycleApiTest {
 
     private static Class<?>[] lifecycleTypes() {
         return new Class<?>[] { MessageLifecycleListener.class, LifecycleHandle.class,
-                HandoffReceipt.class, InboundParentState.class, InboundTraceParent.class,
+                HandoffReceipt.class, LifecycleExecutionContext.class, LifecycleExecutionScope.class,
+                ExecutionContextBundle.class, InboundParentState.class, InboundTraceParent.class,
                 MessageLineage.class, DispatchInfo.class, MessageInfo.class, ExecutionMode.class,
                 ProcessInfo.class, ChainInfo.class, QueueInfo.class, SendInfo.class,
                 LifecycleOutcome.class, FailureCategory.class, FailureInfo.class,
