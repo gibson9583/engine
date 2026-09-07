@@ -687,6 +687,10 @@ public class DefaultExtensionController extends ExtensionController {
                     PluginPropertyWriteOutcome.LEGACY_APPLIED, incoming);
         }
 
+        // Allocate durability evidence before a prepared transaction can transfer ownership.
+        CheckedPropertyWriteReceipt receipt = new CheckedPropertyWriteReceipt();
+        // Initialize all completion constants before any prepared owner exists.
+        PluginPropertyCompletion failedCompletion = PluginPropertyCompletion.FAILED;
         PreparedPluginProperties prepared = null;
         boolean completionDelivered = false;
         try {
@@ -699,8 +703,10 @@ public class DefaultExtensionController extends ExtensionController {
                 validateCheckedCanonical(canonical, checked);
                 AtomicPropertyWriteOutcome atomic = configurationController
                         .compareAndSetPropertyAtomically(pluginName, checked.getPropertyName(),
-                                checked.getExpected(), canonical.getProperty(checked.getPropertyName()));
+                                checked.getExpected(), canonical.getProperty(checked.getPropertyName()), receipt);
                 PluginPropertyWriteOutcome outcome = mapAtomicOutcome(atomic);
+                if (completionFromReceipt(receipt) != mapCompletion(outcome))
+                    throw new ControllerException("checked_property_write_receipt_mismatch");
                 completionDelivered = true;
                 complete(prepared, mapCompletion(outcome), null);
                 return outcome == PluginPropertyWriteOutcome.COMMITTED
@@ -723,22 +729,22 @@ public class DefaultExtensionController extends ExtensionController {
                         PluginPropertyWriteOutcome.PRESERVED_REJECTED);
             }
             throw new ControllerException("unsupported_property_persistence_directive");
-        } catch (PluginPropertyRejectedException e) {
-            throw e;
-        } catch (PluginPropertyWriteException e) {
-            return PluginPropertyWriteResult.withoutProperties(e.getOutcome());
-        } catch (Exception failure) {
+        } catch (Exception | Error failure) {
+            Throwable selected = failure;
             if (prepared != null && !completionDelivered) {
+                PluginPropertyCompletion outcome = completionFromReceipt(receipt);
+                completionDelivered = true;
                 try {
-                    complete(prepared, PluginPropertyCompletion.FAILED, failure);
-                } catch (ControllerException completionFailure) {
-                    failure.addSuppressed(completionFailure);
+                    complete(prepared, outcome, outcome == failedCompletion ? failure : null);
+                } catch (Exception | Error completionFailure) {
+                    selected = combinePropertyFailure(selected, completionFailure);
                 }
             }
-            if (failure instanceof ControllerException) {
-                throw (ControllerException) failure;
-            }
-            throw new ControllerException("plugin_property_preparation_failed", failure);
+            if (selected instanceof Error error) throw error;
+            if (prepared == null && selected instanceof PluginPropertyWriteException write)
+                return PluginPropertyWriteResult.withoutProperties(write.getOutcome());
+            if (selected instanceof ControllerException controller) throw controller;
+            throw new ControllerException("plugin_property_preparation_failed", selected);
         }
     }
 
@@ -782,6 +788,28 @@ public class DefaultExtensionController extends ExtensionController {
                 || canonical.getProperty(checked.getPropertyName()) == null) {
             throw new ControllerException("checked_property_canonical_shape_invalid");
         }
+    }
+
+    private static PluginPropertyCompletion completionFromReceipt(CheckedPropertyWriteReceipt receipt) {
+        CheckedPropertyWriteReceipt.State state = receipt.state();
+        if (state == CheckedPropertyWriteReceipt.State.COMMITTED) return PluginPropertyCompletion.COMMITTED;
+        if (state == CheckedPropertyWriteReceipt.State.CONFLICT) return PluginPropertyCompletion.CONFLICT;
+        if (state == CheckedPropertyWriteReceipt.State.OUTCOME_UNKNOWN) return PluginPropertyCompletion.OUTCOME_UNKNOWN;
+        return PluginPropertyCompletion.FAILED;
+    }
+
+    private static Throwable combinePropertyFailure(Throwable first, Throwable next) {
+        if (first == null || first == next) return next;
+        boolean firstFatal = first instanceof VirtualMachineError || first instanceof ThreadDeath;
+        boolean nextFatal = next instanceof VirtualMachineError || next instanceof ThreadDeath;
+        Throwable primary = !firstFatal && nextFatal ? next : first;
+        Throwable secondary = primary == first ? next : first;
+        try { primary.addSuppressed(secondary); }
+        catch (RuntimeException | Error metadata) {
+            if (!firstFatal && !nextFatal
+                    && (metadata instanceof VirtualMachineError || metadata instanceof ThreadDeath)) return metadata;
+        }
+        return primary;
     }
 
     private static PluginPropertyWriteOutcome mapAtomicOutcome(AtomicPropertyWriteOutcome outcome) {

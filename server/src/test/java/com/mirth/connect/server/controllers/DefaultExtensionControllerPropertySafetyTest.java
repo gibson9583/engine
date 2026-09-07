@@ -61,8 +61,12 @@ public class DefaultExtensionControllerPropertySafetyTest {
                 });
         registration.activate();
         when(fixture.configuration.compareAndSetPropertyAtomically(eq("protected"),
-                eq("policy.v1"), any(ExpectedPropertyValue.class), eq("canonical")))
-                        .thenReturn(AtomicPropertyWriteOutcome.COMMITTED);
+                eq("policy.v1"), any(ExpectedPropertyValue.class), eq("canonical"), any(CheckedPropertyWriteReceipt.class)))
+                        .thenAnswer(call -> {
+                            CheckedPropertyWriteReceipt receipt = call.getArgument(4);
+                            receipt.begin(); receipt.commitAttempted(); receipt.committed();
+                            return AtomicPropertyWriteOutcome.COMMITTED;
+                        });
         Properties incoming = new Properties();
         incoming.setProperty("policy.v1", "plaintext-input");
 
@@ -88,7 +92,7 @@ public class DefaultExtensionControllerPropertySafetyTest {
         verify(fixture.configuration, never()).saveProperty(any(), any(), any());
         verify(fixture.configuration, never()).removePropertiesForGroup(any());
         verify(fixture.configuration, never()).compareAndSetPropertyAtomically(
-                any(), any(), any(), any());
+                any(), any(), any(), any(), any(CheckedPropertyWriteReceipt.class));
     }
 
     @Test
@@ -109,7 +113,7 @@ public class DefaultExtensionControllerPropertySafetyTest {
                 new Properties(), false, PropertyWriteContext.pluginApi()));
         assertEquals(List.of(PluginPropertyCompletion.FAILED), completions);
         verify(fixture.configuration, never()).compareAndSetPropertyAtomically(
-                any(), any(), any(), any());
+                any(), any(), any(), any(), any(CheckedPropertyWriteReceipt.class));
     }
 
     @Test
@@ -128,7 +132,7 @@ public class DefaultExtensionControllerPropertySafetyTest {
                         false, PropertyWriteContext.pluginApi()));
         assertTrue(failure.isConflict());
         verify(fixture.configuration, never()).compareAndSetPropertyAtomically(
-                any(), any(), any(), any());
+                any(), any(), any(), any(), any(CheckedPropertyWriteReceipt.class));
     }
 
     @Test

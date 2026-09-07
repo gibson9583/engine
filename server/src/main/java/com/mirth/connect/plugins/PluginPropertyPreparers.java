@@ -9,6 +9,10 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 /** Engine-owned, plugin-point-keyed registry for property preparers. */
 public final class PluginPropertyPreparers {
+    /** Structural version marker for receipt-aware, exactly-once completion on every exit. */
+    public static final class CompletionV2 { private CompletionV2() { } }
+    public static CompletionV2 completionContractV2() { return null; }
+
     public enum State {
         INITIALIZING,
         ACTIVE,

@@ -380,6 +380,13 @@ public abstract class ConfigurationController extends Controller {
         throw new ControllerException("atomic_property_write_unsupported");
     }
 
+    /** Receipt-aware protected writes must not fall back to an older receipt-less override. */
+    public AtomicPropertyWriteOutcome compareAndSetPropertyAtomically(String group, String name,
+            ExpectedPropertyValue expected, String newValue, CheckedPropertyWriteReceipt receipt)
+            throws ControllerException {
+        throw new ControllerException("checked_property_write_completion_v2_unsupported");
+    }
+
     public abstract void removeProperty(String group, String name);
 
     public abstract String getResources();

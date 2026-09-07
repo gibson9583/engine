@@ -1080,36 +1080,48 @@ public class DefaultConfigurationController extends ConfigurationController {
         Objects.requireNonNull(category, "category");
         Objects.requireNonNull(name, "name");
         Objects.requireNonNull(control, "control");
+        CheckedResources resources = new CheckedResources();
         checkedReadLock(control);
+        resources.lockKind = 1;
         SqlSession session = null;
+        Throwable primaryFailure = null;
         try {
-            control.checkActive();
-            session = checkedReadSessions.get().openSession(true);
-            try (PreparedStatement statement = session.getConnection().prepareStatement(
-                    "SELECT VALUE FROM CONFIGURATION WHERE CATEGORY = ? AND NAME = ?")) {
-                statement.setString(1, category);
-                statement.setString(2, name);
-                try (CheckedReadControl.CancellationRegistration ignored = control.arm(statement);
-                        ResultSet rows = statement.executeQuery()) {
-                    CheckedPropertyValue result = rows.next()
-                            ? CheckedPropertyValue.present(rows.getString(1))
+            try {
+                Throwable jdbcFailure = null;
+                try {
+                    control.checkActive();
+                    resources.session = session = checkedReadSessions.get().openSession(true);
+                    resources.statement = session.getConnection().prepareStatement(
+                            "SELECT VALUE FROM CONFIGURATION WHERE CATEGORY = ? AND NAME = ?");
+                    PreparedStatement statement = (PreparedStatement) resources.statement;
+                    statement.setString(1, category);
+                    statement.setString(2, name);
+                    resources.registration = control.arm(statement);
+                    resources.rows = statement.executeQuery();
+                    CheckedPropertyValue result = resources.rows.next()
+                            ? CheckedPropertyValue.present(resources.rows.getString(1))
                             : CheckedPropertyValue.absent();
                     control.checkActive();
                     return result;
+                } catch (Exception | Error failure) {
+                    jdbcFailure = failure;
+                    throw failure;
+                } finally {
+                    finishCheckedJdbcResources(resources, jdbcFailure);
                 }
+            } catch (CheckedReadException e) {
+                throw e;
+            } catch (SQLTimeoutException e) {
+                throw new CheckedReadException(CheckedReadException.Reason.TIMEOUT);
+            } catch (Exception e) {
+                checkControlledFailure(control, e);
+                throw asControllerException("checked_property_read_failed", e);
             }
-        } catch (CheckedReadException e) {
-            throw e;
-        } catch (SQLTimeoutException e) {
-            throw new CheckedReadException(CheckedReadException.Reason.TIMEOUT);
-        } catch (Exception e) {
-            checkControlledFailure(control, e);
-            throw asControllerException("checked_property_read_failed", e);
+        } catch (ControllerException | RuntimeException | Error failure) {
+            primaryFailure = failure;
+            throw failure;
         } finally {
-            if (session != null) {
-                session.close();
-            }
-            checkedReadUnlock();
+            closeCheckedSession(resources.session, resources.lockKind, primaryFailure);
         }
     }
 
@@ -1124,43 +1136,51 @@ public class DefaultConfigurationController extends ConfigurationController {
             CheckedReadControl control) throws ControllerException {
         Objects.requireNonNull(category, "category");
         Objects.requireNonNull(control, "control");
+        CheckedResources resources = new CheckedResources();
         checkedReadLock(control);
+        resources.lockKind = 1;
         SqlSession session = null;
+        Throwable primaryFailure = null;
         try {
-            control.checkActive();
-            session = checkedReadSessions.get().openSession(true);
-            try (PreparedStatement statement = session.getConnection().prepareStatement(
-                    "SELECT NAME, VALUE FROM CONFIGURATION WHERE CATEGORY = ?")) {
-                statement.setString(1, category);
-                try (CheckedReadControl.CancellationRegistration ignored = control.arm(statement);
-                        ResultSet rows = statement.executeQuery()) {
+            try {
+                Throwable jdbcFailure = null;
+                try {
+                    control.checkActive();
+                    resources.session = session = checkedReadSessions.get().openSession(true);
+                    resources.statement = session.getConnection().prepareStatement(
+                            "SELECT NAME, VALUE FROM CONFIGURATION WHERE CATEGORY = ?");
+                    PreparedStatement statement = (PreparedStatement) resources.statement;
+                    statement.setString(1, category);
+                    resources.registration = control.arm(statement);
+                    resources.rows = statement.executeQuery();
                     Map<String, String> properties = new LinkedHashMap<>();
-                    while (rows.next()) {
-                        String value = rows.getString(2);
-                        if (value == null) {
-                            throw new ControllerException("checked_property_group_null_value");
-                        }
-                        String prior = properties.put(rows.getString(1), value);
-                        if (prior != null) {
-                            throw new ControllerException("checked_property_group_duplicate");
-                        }
+                    while (resources.rows.next()) {
+                        String value = resources.rows.getString(2);
+                        if (value == null) throw new ControllerException("checked_property_group_null_value");
+                        String prior = properties.put(resources.rows.getString(1), value);
+                        if (prior != null) throw new ControllerException("checked_property_group_duplicate");
                     }
                     control.checkActive();
                     return Collections.unmodifiableMap(properties);
+                } catch (Exception | Error failure) {
+                    jdbcFailure = failure;
+                    throw failure;
+                } finally {
+                    finishCheckedJdbcResources(resources, jdbcFailure);
                 }
+            } catch (CheckedReadException e) {
+                throw e;
+            } catch (SQLTimeoutException e) {
+                throw new CheckedReadException(CheckedReadException.Reason.TIMEOUT);
+            } catch (Exception e) {
+                checkControlledFailure(control, e);
+                throw asControllerException("checked_property_group_read_failed", e);
             }
-        } catch (CheckedReadException e) {
-            throw e;
-        } catch (SQLTimeoutException e) {
-            throw new CheckedReadException(CheckedReadException.Reason.TIMEOUT);
-        } catch (Exception e) {
-            checkControlledFailure(control, e);
-            throw asControllerException("checked_property_group_read_failed", e);
+        } catch (ControllerException | RuntimeException | Error failure) {
+            primaryFailure = failure;
+            throw failure;
         } finally {
-            if (session != null) {
-                session.close();
-            }
-            checkedReadUnlock();
+            closeCheckedSession(resources.session, resources.lockKind, primaryFailure);
         }
     }
 
@@ -1177,64 +1197,161 @@ public class DefaultConfigurationController extends ConfigurationController {
     @Override
     public AtomicPropertyWriteOutcome compareAndSetPropertyAtomically(String category, String name,
             ExpectedPropertyValue expected, String newValue) throws ControllerException {
+        return compareAndSetPropertyAtomically(category, name, expected, newValue,
+                new CheckedPropertyWriteReceipt());
+    }
+
+    @Override
+    public AtomicPropertyWriteOutcome compareAndSetPropertyAtomically(String category, String name,
+            ExpectedPropertyValue expected, String newValue, CheckedPropertyWriteReceipt receipt)
+            throws ControllerException {
         Objects.requireNonNull(category, "category");
         Objects.requireNonNull(name, "name");
         Objects.requireNonNull(expected, "expected");
         Objects.requireNonNull(newValue, "newValue");
 
+        Objects.requireNonNull(receipt, "receipt").begin();
+        CheckedResources resources = new CheckedResources();
         checkedWriteLock();
+        resources.lockKind = 2;
         SqlSession session = null;
-        boolean commitAttempted = false;
+        Throwable primaryFailure = null;
         try {
-            session = checkedWriteSessions.get().openSession(false);
-            Map<String, Object> parameters = propertyParameters(category, name, newValue);
-            KeyValuePair observedRow = session.selectOne(
-                    "Configuration.selectPropertyForUpdate", parameters);
-            String observed = checkedRowValue(observedRow);
-            if (!expected.matches(observed)) {
-                session.rollback();
-                return AtomicPropertyWriteOutcome.CONFLICT;
-            }
-
-            if (observedRow == null) {
-                session.insert("Configuration.insertProperty", parameters);
-            } else {
-                int updated = session.update("Configuration.updateProperty", parameters);
-                if (updated != 1) {
+            boolean commitAttempted = false;
+            try {
+                resources.session = session = checkedWriteSessions.get().openSession(false);
+                Map<String, Object> parameters = propertyParameters(category, name, newValue);
+                KeyValuePair observedRow = session.selectOne(
+                        "Configuration.selectPropertyForUpdate", parameters);
+                String observed = checkedRowValue(observedRow);
+                if (!expected.matches(observed)) {
+                    receipt.conflict();
                     session.rollback();
                     return AtomicPropertyWriteOutcome.CONFLICT;
                 }
-            }
 
-            commitAttempted = true;
-            session.commit();
-            return AtomicPropertyWriteOutcome.COMMITTED;
-        } catch (Exception failure) {
-            if (session != null) {
-                try {
-                    session.rollback();
-                } catch (Exception rollbackFailure) {
-                    failure.addSuppressed(rollbackFailure);
+                if (observedRow == null) {
+                    session.insert("Configuration.insertProperty", parameters);
+                } else {
+                    int updated = session.update("Configuration.updateProperty", parameters);
+                    if (updated != 1) {
+                        receipt.conflict();
+                        session.rollback();
+                        return AtomicPropertyWriteOutcome.CONFLICT;
+                    }
                 }
-            }
 
-            if (commitAttempted) {
-                return reconcileAmbiguousPropertyWrite(category, name, expected, newValue, failure);
-            }
-            if (!expected.isPresent()) {
-                CheckedPropertyValue observed = readPropertyFromWritePool(
-                        category, name, failure);
-                if (observed.isPresent()) {
-                    return AtomicPropertyWriteOutcome.CONFLICT;
+                commitAttempted = true;
+                receipt.commitAttempted();
+                session.commit();
+                receipt.committed();
+                return AtomicPropertyWriteOutcome.COMMITTED;
+            } catch (Exception | Error failure) {
+                Throwable selected = failure;
+                if (session != null) {
+                    try {
+                        session.rollback();
+                    } catch (RuntimeException | Error rollbackFailure) {
+                        selected = combineCheckedCleanup(selected, rollbackFailure);
+                    }
                 }
+
+                if (selected instanceof Error error) throw error;
+                Exception ordinary = (Exception) selected;
+                if (commitAttempted) {
+                    return reconcileAmbiguousPropertyWrite(category, name, expected, newValue, ordinary, receipt);
+                }
+                if (!expected.isPresent()) {
+                    verifyPropertyWrite(category, name, expected, newValue, ordinary, receipt, false);
+                    if (receipt.state() == CheckedPropertyWriteReceipt.State.CONFLICT)
+                        return AtomicPropertyWriteOutcome.CONFLICT;
+                }
+                throw asControllerException("atomic_property_write_failed", ordinary);
             }
-            throw asControllerException("atomic_property_write_failed", failure);
+        } catch (ControllerException | RuntimeException | Error failure) {
+            primaryFailure = failure;
+            throw failure;
         } finally {
-            if (session != null) {
-                session.close();
-            }
-            checkedWriteUnlock();
+            finishCheckedResources(resources, primaryFailure);
         }
+    }
+
+    /** Allocated before its first resource; cleanup never allocates an owner or a resource list. */
+    private static final class CheckedResources {
+        ResultSet rows;
+        AutoCloseable registration;
+        java.sql.Statement statement;
+        SqlSession session;
+        int lockKind; // 0 none (verification), 1 read, 2 write
+    }
+
+    private static Throwable closeCheckedJdbcResources(CheckedResources resources, Throwable prior) {
+        Throwable selected = closeCheckedResource(resources.rows, prior); resources.rows = null;
+        selected = closeCheckedResource(resources.registration, selected); resources.registration = null;
+        selected = closeCheckedResource(resources.statement, selected); resources.statement = null;
+        return selected;
+    }
+
+    private static void finishCheckedJdbcResources(CheckedResources resources, Throwable prior)
+            throws Exception {
+        Throwable selected = closeCheckedJdbcResources(resources, prior);
+        if (selected != prior) {
+            if (selected instanceof Error error) throw error;
+            throw (Exception) selected;
+        }
+    }
+
+    private void finishCheckedResources(CheckedResources resources, Throwable prior)
+            throws ControllerException {
+        Throwable selected = closeCheckedJdbcResources(resources, prior);
+        try { closeCheckedSession(resources.session, resources.lockKind, selected); }
+        catch (RuntimeException | Error cleanup) { selected = combineCheckedCleanup(selected, cleanup); }
+        finally { resources.session = null; resources.lockKind = 0; }
+        if (selected != prior) {
+            if (selected instanceof Error error) throw error;
+            if (selected instanceof RuntimeException runtime) throw runtime;
+            throw asControllerException("checked_property_cleanup_failed", (Exception) selected);
+        }
+    }
+
+    private static Throwable closeCheckedResource(AutoCloseable resource, Throwable prior) {
+        try { if (resource != null) resource.close(); }
+        catch (Exception | Error cleanup) { return combineCheckedCleanup(prior, cleanup); }
+        return prior;
+    }
+
+    /** Session closure cannot strand the statement lock or mask an earlier fatal failure. */
+    private void closeCheckedSession(SqlSession session, int lockKind, Throwable prior) {
+        Throwable selected = prior;
+        try {
+            if (session != null) session.close();
+        } catch (RuntimeException | Error cleanup) {
+            selected = combineCheckedCleanup(selected, cleanup);
+        } finally {
+            try {
+                if (lockKind == 2) checkedWriteUnlock(); else if (lockKind == 1) checkedReadUnlock();
+            } catch (RuntimeException | Error cleanup) {
+                selected = combineCheckedCleanup(selected, cleanup);
+            }
+        }
+        if (selected != prior) {
+            if (selected instanceof Error error) throw error;
+            if (selected instanceof RuntimeException runtime) throw runtime;
+        }
+    }
+
+    private static Throwable combineCheckedCleanup(Throwable first, Throwable next) {
+        if (first == null || first == next) return next;
+        boolean firstFatal = first instanceof VirtualMachineError || first instanceof ThreadDeath;
+        boolean nextFatal = next instanceof VirtualMachineError || next instanceof ThreadDeath;
+        Throwable primary = !firstFatal && nextFatal ? next : first;
+        Throwable secondary = primary == first ? next : first;
+        try { primary.addSuppressed(secondary); }
+        catch (RuntimeException | Error metadata) {
+            if (!firstFatal && !nextFatal
+                    && (metadata instanceof VirtualMachineError || metadata instanceof ThreadDeath)) return metadata;
+        }
+        return primary;
     }
 
     private void checkedReadLock(CheckedReadControl control) throws ControllerException {
@@ -1256,8 +1373,8 @@ public class DefaultConfigurationController extends ConfigurationController {
                     try {
                         control.checkActive();
                         return;
-                    } catch (CheckedReadException failure) {
-                        lock.readUnlock();
+                    } catch (CheckedReadException | RuntimeException | Error failure) {
+                        closeCheckedSession(null, 1, failure);
                         throw failure;
                     }
                 }
@@ -1287,51 +1404,52 @@ public class DefaultConfigurationController extends ConfigurationController {
     }
 
     private AtomicPropertyWriteOutcome reconcileAmbiguousPropertyWrite(String category, String name,
-            ExpectedPropertyValue expected, String newValue, Exception commitFailure)
-            throws ControllerException {
-        CheckedPropertyValue observed;
+            ExpectedPropertyValue expected, String newValue, Exception commitFailure,
+            CheckedPropertyWriteReceipt receipt) throws ControllerException {
         try {
-            observed = readPropertyFromWritePool(category, name, commitFailure);
+            verifyPropertyWrite(category, name, expected, newValue, commitFailure, receipt, true);
         } catch (ControllerException unavailable) {
-            return AtomicPropertyWriteOutcome.OUTCOME_UNKNOWN;
+            if (receipt.state() == CheckedPropertyWriteReceipt.State.OUTCOME_UNKNOWN)
+                return AtomicPropertyWriteOutcome.OUTCOME_UNKNOWN;
+            throw unavailable; // proven evidence survives an ordinary verification cleanup error
         }
-        if (observed.isPresent() && newValue.equals(observed.getValue())) {
-            return AtomicPropertyWriteOutcome.COMMITTED;
+        switch (receipt.state()) {
+            case COMMITTED: return AtomicPropertyWriteOutcome.COMMITTED;
+            case CONFLICT: return AtomicPropertyWriteOutcome.CONFLICT;
+            case OUTCOME_UNKNOWN: return AtomicPropertyWriteOutcome.OUTCOME_UNKNOWN;
+            default: throw asControllerException("atomic_property_commit_failed", commitFailure);
         }
-        if (expected.matches(observed.isPresent() ? observed.getValue() : null)) {
-            throw asControllerException("atomic_property_commit_failed", commitFailure);
-        }
-        return AtomicPropertyWriteOutcome.CONFLICT;
     }
 
-    private CheckedPropertyValue readPropertyFromWritePool(
-            String category, String name, Exception prior)
-            throws ControllerException {
-        SqlSession verification = null;
+    private void verifyPropertyWrite(String category, String name, ExpectedPropertyValue expected,
+            String newValue, Exception prior, CheckedPropertyWriteReceipt receipt,
+            boolean commitAttempted) throws ControllerException {
+        CheckedResources resources = new CheckedResources();
+        Throwable primaryFailure = null;
         try {
-            verification = checkedWriteSessions.get().openSession(true);
-            try (PreparedStatement statement = verification.getConnection().prepareStatement(
-                    "SELECT VALUE FROM CONFIGURATION WHERE CATEGORY = ? AND NAME = ?")) {
-                statement.setString(1, category);
-                statement.setString(2, name);
-                try (ResultSet rows = statement.executeQuery()) {
-                    if (!rows.next()) {
-                        return CheckedPropertyValue.absent();
-                    }
-                    String value = rows.getString(1);
-                    if (value == null) {
-                        throw new ControllerException("atomic_property_null_value");
-                    }
-                    return CheckedPropertyValue.present(value);
-                }
+            try {
+                resources.session = checkedWriteSessions.get().openSession(true);
+                resources.statement = resources.session.getConnection().prepareStatement(
+                        "SELECT VALUE FROM CONFIGURATION WHERE CATEGORY = ? AND NAME = ?");
+                PreparedStatement statement = (PreparedStatement) resources.statement;
+                statement.setString(1, category); statement.setString(2, name);
+                resources.rows = statement.executeQuery();
+                boolean present = resources.rows.next();
+                String value = present ? resources.rows.getString(1) : null;
+                if (present && value == null) throw new ControllerException("atomic_property_null_value");
+                // Record authoritative evidence before any row/statement/session cleanup.
+                if (commitAttempted && present && newValue.equals(value)) receipt.committed();
+                else if (expected.matches(value)) receipt.notCommitted();
+                else receipt.conflict();
+            } catch (Exception readFailure) {
+                Throwable selected = combineCheckedCleanup(readFailure, prior);
+                if (selected instanceof Error error) throw error;
+                throw asControllerException("atomic_property_reconciliation_failed", readFailure);
             }
-        } catch (Exception readFailure) {
-            prior.addSuppressed(readFailure);
-            throw asControllerException("atomic_property_reconciliation_failed", readFailure);
+        } catch (ControllerException | RuntimeException | Error failure) {
+            primaryFailure = failure; throw failure;
         } finally {
-            if (verification != null) {
-                verification.close();
-            }
+            finishCheckedResources(resources, primaryFailure);
         }
     }
 
