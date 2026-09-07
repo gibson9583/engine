@@ -57,6 +57,99 @@ public class CheckedReadControlTest {
         registration.close();
     }
 
+    @Test
+    public void signedOriginsZeroAndWrapUseElapsedSubtraction() throws Exception {
+        for (long start : new long[] { -100L, -10L, -1L, 0L, Long.MAX_VALUE - 5L, Long.MIN_VALUE + 5L }) {
+            java.util.concurrent.atomic.AtomicLong clock = new java.util.concurrent.atomic.AtomicLong(start);
+            CheckedReadControl control = new CheckedReadControl(start + 10L, new TestCancellation(), clock::get);
+            assertEquals(10L, control.remainingNanos()); control.checkActive();
+            clock.set(start + 9L); assertEquals(1L, control.remainingNanos()); control.checkActive();
+            clock.set(start + 10L); assertEquals(0L, control.remainingNanos());
+            assertEquals(CheckedReadException.Reason.TIMEOUT,
+                    assertThrows(CheckedReadException.class, control::checkActive).getReason());
+            clock.set(start + 11L); assertEquals(0L, control.remainingNanos());
+            assertEquals(CheckedReadException.Reason.TIMEOUT,
+                    assertThrows(CheckedReadException.class, control::checkActive).getReason());
+        }
+    }
+
+    @Test
+    public void maximumSignedDeadlineIsBoundedWhileNoneIsExplicitlyUnbounded() throws Exception {
+        java.util.concurrent.atomic.AtomicLong clock = new java.util.concurrent.atomic.AtomicLong(Long.MAX_VALUE - 2_000_000_000L);
+        CheckedReadControl control = new CheckedReadControl(Long.MAX_VALUE, new TestCancellation(), clock::get);
+        Statement bounded = mock(Statement.class);
+        try (var registration = control.arm(bounded)) {
+            verify(bounded).setQueryTimeout(2);
+            assertEquals(2_000_000_000L, control.remainingNanos());
+        }
+        clock.set(Long.MAX_VALUE);
+        assertEquals(CheckedReadException.Reason.TIMEOUT,
+                assertThrows(CheckedReadException.class, control::checkActive).getReason());
+        Statement unlimited = mock(Statement.class);
+        try (var registration = CheckedReadControl.NONE.arm(unlimited)) {
+            CheckedReadControl.NONE.checkActive();
+            assertEquals(Long.MAX_VALUE, CheckedReadControl.NONE.remainingNanos());
+            org.mockito.Mockito.verifyNoInteractions(unlimited);
+        }
+    }
+
+    @Test
+    public void signedDeadlineCancellationStillPrecedesTimeout() {
+        TestCancellation cancellation = new TestCancellation(); cancellation.cancel();
+        CheckedReadControl control = new CheckedReadControl(-10L, cancellation, () -> -1L);
+        assertEquals(CheckedReadException.Reason.CANCELLED,
+                assertThrows(CheckedReadException.class, control::checkActive).getReason());
+    }
+
+    @Test
+    public void expiredSignedDeadlinesArmNoJdbcWorkAndCancellationDoesNotReadClock() {
+        for (long deadline : new long[] { Long.MIN_VALUE, -1L, 0L, 1L, Long.MAX_VALUE }) {
+            TestCancellation cancellation = new TestCancellation();
+            CheckedReadControl control = new CheckedReadControl(deadline, cancellation, () -> deadline);
+            Statement statement = mock(Statement.class);
+            assertEquals(CheckedReadException.Reason.TIMEOUT,
+                    assertThrows(CheckedReadException.class, () -> control.arm(statement)).getReason());
+            org.mockito.Mockito.verifyNoInteractions(statement);
+            org.junit.Assert.assertNull(cancellation.callback.get());
+        }
+        TestCancellation cancelled = new TestCancellation(); cancelled.cancel();
+        CheckedReadControl control = new CheckedReadControl(0L, cancelled,
+                () -> { throw new AssertionError("cancelled operation consulted deadline clock"); });
+        Statement statement = mock(Statement.class);
+        assertEquals(CheckedReadException.Reason.CANCELLED,
+                assertThrows(CheckedReadException.class, () -> control.arm(statement)).getReason());
+        org.mockito.Mockito.verifyNoInteractions(statement);
+    }
+
+    @Test
+    public void signedAndWrappedArmingSchedulesActualCancellation() throws Exception {
+        for (long initial : new long[] { -1_000_000_000L, -200_000_000L, Long.MAX_VALUE - 100_000_000L }) {
+            Statement statement = mock(Statement.class);
+            long realStart = System.nanoTime();
+            java.util.function.LongSupplier shiftedClock = () -> initial + (System.nanoTime() - realStart);
+            CheckedReadControl control = new CheckedReadControl(initial + 200_000_000L,
+                    new TestCancellation(), shiftedClock);
+            try (var registration = control.arm(statement)) {
+                verify(statement).setQueryTimeout(1);
+                verify(statement, timeout(2000)).cancel();
+                assertEquals(0L, control.remainingNanos());
+                assertEquals(CheckedReadException.Reason.TIMEOUT,
+                        assertThrows(CheckedReadException.class, control::checkActive).getReason());
+            }
+        }
+    }
+
+    @Test
+    public void largestBoundedIntervalClampsJdbcTimeoutWithoutOverflow() throws Exception {
+        CheckedReadControl control = new CheckedReadControl(-1L, new TestCancellation(), () -> Long.MIN_VALUE);
+        assertEquals(Long.MAX_VALUE, control.remainingNanos());
+        Statement statement = mock(Statement.class);
+        try (var registration = control.arm(statement)) {
+            verify(statement).setQueryTimeout(Integer.MAX_VALUE);
+            control.checkActive();
+        }
+    }
+
     private static final class TestCancellation implements CheckedReadControl.Cancellation {
         private final AtomicBoolean cancelled = new AtomicBoolean();
         private final AtomicReference<Runnable> callback = new AtomicReference<>();

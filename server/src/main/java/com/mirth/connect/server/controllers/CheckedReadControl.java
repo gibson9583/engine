@@ -7,6 +7,7 @@ import java.util.Objects;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.ScheduledThreadPoolExecutor;
+import java.util.function.LongSupplier;
 
 /** Immutable deadline and cooperative-cancellation contract for a checked read. */
 public final class CheckedReadControl {
@@ -37,17 +38,32 @@ public final class CheckedReadControl {
     };
 
     public static final CheckedReadControl NONE =
-            new CheckedReadControl(Long.MAX_VALUE, NEVER_CANCELLED);
+            new CheckedReadControl(Long.MAX_VALUE, NEVER_CANCELLED, System::nanoTime, true);
 
     private final long deadlineNanos;
     private final Cancellation cancellation;
+    private final LongSupplier nanoTime;
+    private final boolean unbounded;
 
+    /**
+     * A bounded absolute System.nanoTime deadline. Its signed value may be zero or negative;
+     * the interval must be less than 2^63 nanoseconds, as for other nanoTime subtraction.
+     * Use NONE explicitly for an unbounded read; Long.MAX_VALUE is a valid bounded deadline.
+     */
     public CheckedReadControl(long deadlineNanos, Cancellation cancellation) {
-        if (deadlineNanos <= 0L) {
-            throw new IllegalArgumentException("deadlineNanos must be positive");
-        }
+        this(deadlineNanos, cancellation, System::nanoTime, false);
+    }
+
+    CheckedReadControl(long deadlineNanos, Cancellation cancellation, LongSupplier nanoTime) {
+        this(deadlineNanos, cancellation, nanoTime, false);
+    }
+
+    private CheckedReadControl(long deadlineNanos, Cancellation cancellation,
+            LongSupplier nanoTime, boolean unbounded) {
         this.deadlineNanos = deadlineNanos;
         this.cancellation = Objects.requireNonNull(cancellation, "cancellation");
+        this.nanoTime = Objects.requireNonNull(nanoTime, "nanoTime");
+        this.unbounded = unbounded;
     }
 
     public long getDeadlineNanos() {
@@ -59,17 +75,17 @@ public final class CheckedReadControl {
     }
 
     public long remainingNanos() {
-        if (deadlineNanos == Long.MAX_VALUE) {
+        if (unbounded) {
             return Long.MAX_VALUE;
         }
-        return Math.max(0L, deadlineNanos - System.nanoTime());
+        return Math.max(0L, deadlineNanos - nanoTime.getAsLong());
     }
 
     public void checkActive() throws CheckedReadException {
         if (cancellation.isCancelled()) {
             throw new CheckedReadException(CheckedReadException.Reason.CANCELLED);
         }
-        if (deadlineNanos != Long.MAX_VALUE && System.nanoTime() >= deadlineNanos) {
+        if (!unbounded && deadlineNanos - nanoTime.getAsLong() <= 0L) {
             throw new CheckedReadException(CheckedReadException.Reason.TIMEOUT);
         }
     }
@@ -79,8 +95,8 @@ public final class CheckedReadControl {
             throws SQLException, CheckedReadException {
         Objects.requireNonNull(statement, "statement");
         checkActive();
-        if (deadlineNanos != Long.MAX_VALUE) {
-            long remaining = Math.max(1L, deadlineNanos - System.nanoTime());
+        if (!unbounded) {
+            long remaining = Math.max(1L, deadlineNanos - nanoTime.getAsLong());
             long secondNanos = TimeUnit.SECONDS.toNanos(1L);
             long seconds = Math.max(1L, (remaining - 1L) / secondNanos + 1L);
             statement.setQueryTimeout((int) Math.min(Integer.MAX_VALUE, seconds));
@@ -92,7 +108,7 @@ public final class CheckedReadControl {
                 // The executing thread performs the authoritative typed status check.
             }
         };
-        ScheduledFuture<?> deadlineTask = deadlineNanos == Long.MAX_VALUE ? null
+        ScheduledFuture<?> deadlineTask = unbounded ? null
                 : DEADLINE_CANCELLER.schedule(cancelStatement, remainingNanos(),
                         TimeUnit.NANOSECONDS);
         CancellationRegistration registration = cancellation.register(cancelStatement);
